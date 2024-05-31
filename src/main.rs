@@ -80,7 +80,6 @@ struct Cli {
 
 fn main() {
     let args = Cli::parse();
-    println!("{:?}", args);
     match (args.min_bound.clone(), args.max_bound.clone()) {
         (Some(min_bound), Some(max_bound)) => {
             // check if min_bound and max_bound have the same length
