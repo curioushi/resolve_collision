@@ -3,6 +3,7 @@ use std::panic;
 use clap::Parser;
 use ncollide3d::bounding_volume::bounding_sphere;
 use ncollide3d::bounding_volume::BoundingSphere;
+use ncollide3d::bounding_volume::AABB;
 use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
@@ -172,7 +173,11 @@ fn ray_casting(
     cubes: &Vec<CuboidWithTf>,
     scene_mesh: &Option<TriMesh<f64>>,
     rays: &Vec<Ray<f64>>,
-) -> (Vec<na::Point3<f64>>, Vec<na::Vector3<f64>>) {
+) -> (
+    Vec<na::Point3<f64>>,
+    Vec<na::Vector3<f64>>,
+    Vec<Vec<na::Point3<f64>>>,
+) {
     let mut leaves: Vec<(usize, BoundingSphere<f64>)> = vec![];
     for (index, cube) in cubes.iter().enumerate() {
         leaves.push((
@@ -184,18 +189,23 @@ fn ray_casting(
     let bvt = BVT::new_balanced(leaves.clone());
     let mut points: Vec<na::Point3<f64>> = vec![];
     let mut normals: Vec<na::Vector3<f64>> = vec![];
+    let mut cube_points: Vec<Vec<na::Point3<f64>>> = vec![vec![]; cubes.len()];
     for ray in rays.iter() {
         let mut interferences = Vec::new();
         let mut visitor = RayInterferencesCollector::new(&ray, f64::INFINITY, &mut interferences);
         bvt.visit(&mut visitor);
 
         let mut smallest_toi = f64::INFINITY;
+        let mut cube_index: Option<usize> = None;
         for i in interferences.iter() {
             let cube = &cubes[*i];
             let tf = cube.tf;
             let toi = cube.cuboid.toi_with_ray(&tf, &ray, f64::INFINITY, true);
             if let Some(toi) = toi {
-                smallest_toi = smallest_toi.min(toi);
+                if toi < smallest_toi {
+                    smallest_toi = toi;
+                    cube_index = Some(*i);
+                }
             }
         }
 
@@ -203,20 +213,27 @@ fn ray_casting(
             let toi =
                 scene_mesh.toi_with_ray(&na::Isometry3::identity(), &ray, f64::INFINITY, true);
             if let Some(toi) = toi {
-                smallest_toi = smallest_toi.min(toi);
+                if toi < smallest_toi {
+                    smallest_toi = toi;
+                    cube_index = None;
+                }
             }
         }
 
         if smallest_toi < f64::INFINITY {
-            points.push(ray.origin + ray.dir * smallest_toi);
+            let point = ray.origin + ray.dir * smallest_toi;
+            points.push(point);
             normals.push(ray.dir);
+            if let Some(cube_index) = cube_index {
+                cube_points[cube_index].push(point);
+            }
         }
     }
-    (points, normals)
+    (points, normals, cube_points)
 }
 
 fn write_to_pcd(points: &Vec<na::Point3<f64>>, normals: &Vec<na::Vector3<f64>>, path: &str) {
-    let mut file = std::fs::File::create(path).unwrap();
+    let mut file = std::fs::File::create(format!("{}/cloud.pcd", path)).unwrap();
     file.write_all(b"VERSION .7\n").unwrap();
     file.write_all(b"FIELDS x y z normal_x normal_y normal_z\n")
         .unwrap();
@@ -248,6 +265,82 @@ fn write_to_pcd(points: &Vec<na::Point3<f64>>, normals: &Vec<na::Vector3<f64>>, 
     }
 }
 
+fn compute_visibility(cube: &CuboidWithTf, cube_points: &Vec<na::Point3<f64>>) -> f64 {
+    if cube_points.len() == 0 {
+        return 0.0;
+    }
+    let cube_points = cube_points
+        .iter()
+        .map(|p| cube.tf.inverse_transform_point(p));
+    let mut front_points: Vec<na::Point3<f64>> = vec![];
+    let mut back_points: Vec<na::Point3<f64>> = vec![];
+    let mut left_points: Vec<na::Point3<f64>> = vec![];
+    let mut right_points: Vec<na::Point3<f64>> = vec![];
+    let mut top_points: Vec<na::Point3<f64>> = vec![];
+    let mut bottom_points: Vec<na::Point3<f64>> = vec![];
+    let (half_x, half_y, half_z) = (
+        cube.cuboid.half_extents[0],
+        cube.cuboid.half_extents[1],
+        cube.cuboid.half_extents[2],
+    );
+    for point in cube_points {
+        let (x, y, z) = (point.x, point.y, point.z);
+        if (x - half_x).abs() < 1e-4 {
+            front_points.push(point);
+        } else if (x + half_x).abs() < 1e-4 {
+            back_points.push(point);
+        } else if (y - half_y).abs() < 1e-4 {
+            left_points.push(point);
+        } else if (y + half_y).abs() < 1e-4 {
+            right_points.push(point);
+        } else if (z - half_z).abs() < 1e-4 {
+            top_points.push(point);
+        } else if (z + half_z).abs() < 1e-4 {
+            bottom_points.push(point);
+        }
+    }
+    // compute area of each face
+    let mut front_iou = 0.0;
+    let mut back_iou = 0.0;
+    let mut left_iou = 0.0;
+    let mut right_iou = 0.0;
+    let mut top_iou = 0.0;
+    let mut bottom_iou = 0.0;
+    if front_points.len() > 1 {
+        let front_aabb = AABB::from_points(&front_points);
+        front_iou =
+            (front_aabb.half_extents()[1] * front_aabb.half_extents()[2]) / (half_y * half_z);
+    }
+    if back_points.len() > 1 {
+        let back_aabb = AABB::from_points(&back_points);
+        back_iou = (back_aabb.half_extents()[1] * back_aabb.half_extents()[2]) / (half_y * half_z);
+    }
+    if left_points.len() > 1 {
+        let left_aabb = AABB::from_points(&left_points);
+        left_iou = (left_aabb.half_extents()[0] * left_aabb.half_extents()[2]) / (half_x * half_z);
+    }
+    if right_points.len() > 1 {
+        let right_aabb = AABB::from_points(&right_points);
+        right_iou =
+            (right_aabb.half_extents()[0] * right_aabb.half_extents()[2]) / (half_x * half_z);
+    }
+    if top_points.len() > 1 {
+        let top_aabb = AABB::from_points(&top_points);
+        top_iou = (top_aabb.half_extents()[0] * top_aabb.half_extents()[1]) / (half_x * half_y);
+    }
+    if bottom_points.len() > 1 {
+        let bottom_aabb = AABB::from_points(&bottom_points);
+        bottom_iou =
+            (bottom_aabb.half_extents()[0] * bottom_aabb.half_extents()[1]) / (half_x * half_y);
+    }
+    front_iou
+        .max(back_iou)
+        .max(left_iou)
+        .max(right_iou)
+        .max(top_iou)
+        .max(bottom_iou)
+}
+
 fn main() {
     let args = Cli::parse();
     let (cubes, scene_mesh, lidars) = load_from_directory(&args.input_dir);
@@ -256,6 +349,16 @@ fn main() {
         .map(|l| create_rays(l))
         .collect::<Vec<Vec<Ray<f64>>>>();
     let rays: Vec<Ray<f64>> = rays.iter().flatten().cloned().collect();
-    let (points, normals) = ray_casting(&cubes, &scene_mesh, &rays);
+    let (points, normals, cube_points) = ray_casting(&cubes, &scene_mesh, &rays);
     write_to_pcd(&points, &normals, &args.output_dir);
+
+    // write visibility to file
+    let visibility: Vec<f64> = cubes
+        .iter()
+        .zip(cube_points.iter())
+        .map(|(cube, cube_points)| compute_visibility(cube, cube_points))
+        .collect();
+    let mut file = std::fs::File::create(format!("{}/visibility.json", args.output_dir)).unwrap();
+    file.write_all(serde_json::to_string(&visibility).unwrap().as_bytes())
+        .unwrap();
 }
