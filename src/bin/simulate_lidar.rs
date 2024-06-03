@@ -172,7 +172,7 @@ fn ray_casting(
     cubes: &Vec<CuboidWithTf>,
     scene_mesh: &Option<TriMesh<f64>>,
     rays: &Vec<Ray<f64>>,
-) -> Vec<na::Point3<f64>> {
+) -> (Vec<na::Point3<f64>>, Vec<na::Vector3<f64>>) {
     let mut leaves: Vec<(usize, BoundingSphere<f64>)> = vec![];
     for (index, cube) in cubes.iter().enumerate() {
         leaves.push((
@@ -183,6 +183,7 @@ fn ray_casting(
 
     let bvt = BVT::new_balanced(leaves.clone());
     let mut points: Vec<na::Point3<f64>> = vec![];
+    let mut normals: Vec<na::Vector3<f64>> = vec![];
     for ray in rays.iter() {
         let mut interferences = Vec::new();
         let mut visitor = RayInterferencesCollector::new(&ray, f64::INFINITY, &mut interferences);
@@ -208,19 +209,20 @@ fn ray_casting(
 
         if smallest_toi < f64::INFINITY {
             points.push(ray.origin + ray.dir * smallest_toi);
+            normals.push(ray.dir);
         }
     }
-    points
+    (points, normals)
 }
 
-fn write_to_pcd(points: &Vec<na::Point3<f64>>, path: &str) {
+fn write_to_pcd(points: &Vec<na::Point3<f64>>, normals: &Vec<na::Vector3<f64>>, path: &str) {
     let mut file = std::fs::File::create(path).unwrap();
     file.write_all(b"VERSION .7\n").unwrap();
-    file.write_all(format!("FIELDS x y z\n").as_bytes())
+    file.write_all(b"FIELDS x y z normal_x normal_y normal_z\n")
         .unwrap();
-    file.write_all(format!("SIZE 4 4 4\n").as_bytes()).unwrap();
-    file.write_all(format!("TYPE F F F\n").as_bytes()).unwrap();
-    file.write_all(format!("COUNT 1 1 1\n").as_bytes()).unwrap();
+    file.write_all(b"SIZE 4 4 4 4 4 4\n").unwrap();
+    file.write_all(b"TYPE F F F F F F\n").unwrap();
+    file.write_all(b"COUNT 1 1 1 1 1 1\n").unwrap();
     file.write_all(b"WIDTH ").unwrap();
     file.write_all(format!("{}\n", points.len()).as_bytes())
         .unwrap();
@@ -230,10 +232,19 @@ fn write_to_pcd(points: &Vec<na::Point3<f64>>, path: &str) {
     file.write_all(format!("{}\n", points.len()).as_bytes())
         .unwrap();
     file.write_all(b"DATA binary\n").unwrap();
-    for point in points.iter() {
-        file.write_all(&(point.x as f32).to_le_bytes()).unwrap();
-        file.write_all(&(point.y as f32).to_le_bytes()).unwrap();
-        file.write_all(&(point.z as f32).to_le_bytes()).unwrap();
+    for i in 0..points.len() {
+        file.write_all(&(points[i].coords.x as f32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(points[i].coords.y as f32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(points[i].coords.z as f32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(normals[i].x as f32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(normals[i].y as f32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(normals[i].z as f32).to_le_bytes())
+            .unwrap();
     }
 }
 
@@ -245,6 +256,6 @@ fn main() {
         .map(|l| create_rays(l))
         .collect::<Vec<Vec<Ray<f64>>>>();
     let rays: Vec<Ray<f64>> = rays.iter().flatten().cloned().collect();
-    let points = ray_casting(&cubes, &scene_mesh, &rays);
-    write_to_pcd(&points, &args.output_dir);
+    let (points, normals) = ray_casting(&cubes, &scene_mesh, &rays);
+    write_to_pcd(&points, &normals, &args.output_dir);
 }
