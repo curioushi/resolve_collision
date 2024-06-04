@@ -140,26 +140,21 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
 fn create_rays(lidar_info: &LidarInfo) -> Vec<Ray<f64>> {
     let mut rays: Vec<Ray<f64>> = vec![];
     if lidar_info.model == "LIVOX-MID-360" {
-        let n_verticle = 64;
-        let min_vertical = -7f64.to_radians();
-        let max_vertical = 52f64.to_radians();
-        let n_horizontal = 360;
-        let min_horizontal = 0f64.to_radians();
-        let max_horizontal = 360f64.to_radians();
-        for i in 0..n_verticle {
-            for j in 0..n_horizontal {
-                let angle_vertical = min_vertical
-                    + (max_vertical - min_vertical) * i as f64 / (n_verticle - 1) as f64;
-                let angle_horizontal = min_horizontal
-                    + (max_horizontal - min_horizontal) * j as f64 / (n_horizontal - 1) as f64;
-                let origin = na::Point3::new(0.0, 0.0, 0.0);
-                let dir = na::Vector3::new(
-                    angle_vertical.cos() * angle_horizontal.cos(),
-                    angle_vertical.cos() * angle_horizontal.sin(),
-                    angle_vertical.sin(),
-                );
-                rays.push(Ray::new(origin, dir));
-            }
+        let points_per_second = 200000;
+        let num_frames = lidar_info.num_frames.clone().unwrap();
+        let num_points = num_frames * 20000;
+        for i in 0..num_points {
+            let t = i as f64 / points_per_second as f64;
+            let vertical_angle = 0.45 * (62.055 * t).sin() + 0.076 * (1000000.0 * t).sin() + 0.4;
+            let horizontal_angle =
+                (1137.0 * t).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI;
+            let origin = na::Point3::new(0.0, 0.0, 0.0);
+            let dir = na::Vector3::new(
+                vertical_angle.cos() * horizontal_angle.cos(),
+                vertical_angle.cos() * horizontal_angle.sin(),
+                vertical_angle.sin(),
+            );
+            rays.push(Ray::new(origin, dir));
         }
     }
     for ray in rays.iter_mut() {
