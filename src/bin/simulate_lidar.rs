@@ -9,22 +9,11 @@ use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
 use ncollide3d::shape::{Cuboid, TriMesh};
+use resolve_collision::common::{CubeSerde, CuboidWithTf};
 use resolve_collision::pcd_io::write_pcd_with_normal;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use stl_io::read_stl;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CubeSerde {
-    tf: Vec<Vec<f64>>,
-    size: Vec<f64>,
-}
-
-#[derive(Debug)]
-struct CuboidWithTf {
-    cuboid: Cuboid<f64>,
-    tf: na::Isometry3<f64>,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct LidarSerde {
@@ -99,20 +88,7 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
 
     let cubes: Vec<CuboidWithTf> = cube_serdes
         .iter()
-        .map(|t| {
-            let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-                na::Vector3::new(t.tf[0][0], t.tf[0][1], t.tf[0][2]),
-                na::Vector3::new(t.tf[1][0], t.tf[1][1], t.tf[1][2]),
-                na::Vector3::new(t.tf[2][0], t.tf[2][1], t.tf[2][2]),
-            ]));
-            let translation = na::Translation3::new(t.tf[0][3], t.tf[1][3], t.tf[2][3]);
-            let tf = na::Isometry3::from_parts(translation, rotmat.into());
-            let size = na::Vector3::new(t.size[0], t.size[1], t.size[2]);
-            CuboidWithTf {
-                cuboid: Cuboid::new(size / 2.0),
-                tf,
-            }
-        })
+        .map(|t| CuboidWithTf::from_cube_serde(t))
         .collect();
 
     if stl_files.len() == 1 {

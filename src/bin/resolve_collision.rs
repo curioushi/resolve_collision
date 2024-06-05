@@ -2,7 +2,7 @@ use clap::Parser;
 use ncollide3d as n3d;
 use ncollide3d::na;
 use ncollide3d::shape::Cuboid;
-use serde::{Deserialize, Serialize};
+use resolve_collision::common::{CubeSerde, CuboidWithTf};
 
 fn shrink_by_point<T>(
     tf: &na::Isometry3<T>,
@@ -52,17 +52,6 @@ fn resolve_contact_by_shrink(
     counter
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct CubeSerde {
-    tf: Vec<Vec<f64>>,
-    size: Vec<f64>,
-}
-
-struct CuboidWithTf {
-    cuboid: Cuboid<f64>,
-    tf: na::Isometry3<f64>,
-}
-
 #[derive(Parser, Debug)]
 struct Cli {
     #[arg(short, long)]
@@ -104,35 +93,8 @@ fn main() {
     let mut cubes: Vec<CuboidWithTf> = Vec::new();
     if let Ok(json_data) = std::fs::read_to_string(args.input) {
         let cubes_serde: Vec<CubeSerde> = serde_json::from_str(&json_data).unwrap();
-        for cude_serde in cubes_serde.iter() {
-            let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-                na::Vector3::new(
-                    cude_serde.tf[0][0],
-                    cude_serde.tf[1][0],
-                    cude_serde.tf[2][0],
-                ),
-                na::Vector3::new(
-                    cude_serde.tf[0][1],
-                    cude_serde.tf[1][1],
-                    cude_serde.tf[2][1],
-                ),
-                na::Vector3::new(
-                    cude_serde.tf[0][2],
-                    cude_serde.tf[1][2],
-                    cude_serde.tf[2][2],
-                ),
-            ]));
-            let tf = na::Isometry3::from_parts(
-                na::Translation3::new(
-                    cude_serde.tf[0][3],
-                    cude_serde.tf[1][3],
-                    cude_serde.tf[2][3],
-                ),
-                na::UnitQuaternion::from_rotation_matrix(&rotmat),
-            );
-            let size = na::Vector3::new(cude_serde.size[0], cude_serde.size[1], cude_serde.size[2]);
-            let cuboid = Cuboid::new(size / 2.0);
-            cubes.push(CuboidWithTf { cuboid, tf });
+        for c in cubes_serde.iter() {
+            cubes.push(CuboidWithTf::from_cube_serde(c));
         }
     }
 
