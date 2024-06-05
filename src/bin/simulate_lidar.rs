@@ -9,6 +9,7 @@ use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
 use ncollide3d::shape::{Cuboid, TriMesh};
+use resolve_collision::pcd_io::write_pcd_with_normal;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use stl_io::read_stl;
@@ -227,39 +228,6 @@ fn ray_casting(
     (points, normals, cube_points)
 }
 
-fn write_to_pcd(points: &Vec<na::Point3<f64>>, normals: &Vec<na::Vector3<f64>>, path: &str) {
-    let mut file = std::fs::File::create(format!("{}/cloud.pcd", path)).unwrap();
-    file.write_all(b"VERSION .7\n").unwrap();
-    file.write_all(b"FIELDS x y z normal_x normal_y normal_z\n")
-        .unwrap();
-    file.write_all(b"SIZE 4 4 4 4 4 4\n").unwrap();
-    file.write_all(b"TYPE F F F F F F\n").unwrap();
-    file.write_all(b"COUNT 1 1 1 1 1 1\n").unwrap();
-    file.write_all(b"WIDTH ").unwrap();
-    file.write_all(format!("{}\n", points.len()).as_bytes())
-        .unwrap();
-    file.write_all(b"HEIGHT 1\n").unwrap();
-    file.write_all(b"VIEWPOINT 0 0 0 1 0 0 0\n").unwrap();
-    file.write_all(b"POINTS ").unwrap();
-    file.write_all(format!("{}\n", points.len()).as_bytes())
-        .unwrap();
-    file.write_all(b"DATA binary\n").unwrap();
-    for i in 0..points.len() {
-        file.write_all(&(points[i].coords.x as f32).to_le_bytes())
-            .unwrap();
-        file.write_all(&(points[i].coords.y as f32).to_le_bytes())
-            .unwrap();
-        file.write_all(&(points[i].coords.z as f32).to_le_bytes())
-            .unwrap();
-        file.write_all(&(normals[i].x as f32).to_le_bytes())
-            .unwrap();
-        file.write_all(&(normals[i].y as f32).to_le_bytes())
-            .unwrap();
-        file.write_all(&(normals[i].z as f32).to_le_bytes())
-            .unwrap();
-    }
-}
-
 fn compute_visibility(cube: &CuboidWithTf, cube_points: &Vec<na::Point3<f64>>) -> f64 {
     if cube_points.len() == 0 {
         return 0.0;
@@ -345,7 +313,7 @@ fn main() {
         .collect::<Vec<Vec<Ray<f64>>>>();
     let rays: Vec<Ray<f64>> = rays.iter().flatten().cloned().collect();
     let (points, normals, cube_points) = ray_casting(&cubes, &scene_mesh, &rays);
-    write_to_pcd(&points, &normals, &args.output_dir);
+    write_pcd_with_normal(&points, &normals, &args.output_dir);
 
     // write visibility to file
     let visibility: Vec<f64> = cubes
