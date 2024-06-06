@@ -72,9 +72,9 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
         .iter()
         .map(|t| {
             let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-                na::Vector3::new(t.tf[0][0], t.tf[0][1], t.tf[0][2]),
-                na::Vector3::new(t.tf[1][0], t.tf[1][1], t.tf[1][2]),
-                na::Vector3::new(t.tf[2][0], t.tf[2][1], t.tf[2][2]),
+                na::Vector3::new(t.tf[0][0], t.tf[1][0], t.tf[2][0]),
+                na::Vector3::new(t.tf[0][1], t.tf[1][1], t.tf[2][1]),
+                na::Vector3::new(t.tf[0][2], t.tf[1][2], t.tf[2][2]),
             ]));
             let translation = na::Translation3::new(t.tf[0][3], t.tf[1][3], t.tf[2][3]);
             let tf = na::Isometry3::from_parts(translation, rotmat.into());

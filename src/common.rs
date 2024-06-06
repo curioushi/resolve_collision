@@ -17,9 +17,9 @@ pub struct CuboidWithTf {
 impl CuboidWithTf {
     pub fn from_cube_serde(c: &CubeSerde) -> Self {
         let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-            na::Vector3::new(c.tf[0][0], c.tf[0][1], c.tf[0][2]),
-            na::Vector3::new(c.tf[1][0], c.tf[1][1], c.tf[1][2]),
-            na::Vector3::new(c.tf[2][0], c.tf[2][1], c.tf[2][2]),
+            na::Vector3::new(c.tf[0][0], c.tf[1][0], c.tf[2][0]),
+            na::Vector3::new(c.tf[0][1], c.tf[1][1], c.tf[2][1]),
+            na::Vector3::new(c.tf[0][2], c.tf[1][2], c.tf[2][2]),
         ]));
         let translation = na::Translation3::new(c.tf[0][3], c.tf[1][3], c.tf[2][3]);
         let tf = na::Isometry3::from_parts(translation, rotmat.into());
