@@ -8,7 +8,7 @@ pub struct CubeSerde {
     pub size: Vec<f64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CuboidWithTf {
     pub cuboid: Cuboid<f64>,
     pub tf: na::Isometry3<f64>,
@@ -28,5 +28,56 @@ impl CuboidWithTf {
             cuboid: Cuboid::new(size / 2.0),
             tf,
         }
+    }
+
+    pub fn rot_x_90(&mut self) {
+        let half_extents = self.cuboid.half_extents;
+        self.cuboid = Cuboid::new(na::Vector3::new(
+            half_extents[0],
+            half_extents[2],
+            half_extents[1],
+        ));
+        self.tf.rotation = self.tf.rotation
+            * na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f64::consts::FRAC_PI_2);
+    }
+
+    pub fn rot_y_90(&mut self) {
+        let half_extents = self.cuboid.half_extents;
+        self.cuboid = Cuboid::new(na::Vector3::new(
+            half_extents[2],
+            half_extents[1],
+            half_extents[0],
+        ));
+        self.tf.rotation = self.tf.rotation
+            * na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+    }
+
+    pub fn rot_z_90(&mut self) {
+        let half_extents = self.cuboid.half_extents;
+        self.cuboid = Cuboid::new(na::Vector3::new(
+            half_extents[1],
+            half_extents[0],
+            half_extents[2],
+        ));
+        self.tf.rotation = self.tf.rotation
+            * na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), std::f64::consts::FRAC_PI_2);
+    }
+
+    pub fn new_rot_x_90(&self) -> CuboidWithTf {
+        let mut cube = self.clone();
+        cube.rot_x_90();
+        cube
+    }
+
+    pub fn new_rot_y_90(&self) -> CuboidWithTf {
+        let mut cube = self.clone();
+        cube.rot_y_90();
+        cube
+    }
+
+    pub fn new_rot_z_90(&self) -> CuboidWithTf {
+        let mut cube = self.clone();
+        cube.rot_z_90();
+        cube
     }
 }
