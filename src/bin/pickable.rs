@@ -3,40 +3,68 @@ use std::vec;
 use clap::Parser;
 use ncollide3d::bounding_volume::bounding_sphere;
 use ncollide3d::bounding_volume::BoundingSphere;
-use ncollide3d::bounding_volume::AABB;
 use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
-use ncollide3d::shape::Cuboid;
 use resolve_collision::common::{CubeSerde, CuboidWithTf};
 
 #[derive(Parser, Debug)]
 struct Cli {
     #[arg(short, long)]
-    input_dir: String,
+    input: String,
 
     #[arg(short, long)]
-    output_dir: String,
+    output: String,
 }
 
-fn load_from_directory(dir: &str) -> Vec<CuboidWithTf> {
-    let mut json_files: Vec<String> = vec![];
-    let paths = std::fs::read_dir(dir).unwrap();
-    for path in paths {
-        let path = path.unwrap().path();
-        let path_str = path.to_str().unwrap();
-        if path_str.ends_with(".json") {
-            json_files.push(path_str.to_string());
+fn pickable(cubes: &Vec<CuboidWithTf>) -> Vec<bool> {
+    let mut leaves: Vec<(usize, BoundingSphere<f64>)> = vec![];
+    for (index, cube) in cubes.iter().enumerate() {
+        leaves.push((
+            index,
+            bounding_sphere::bounding_sphere(&cube.cuboid, &cube.tf),
+        ));
+    }
+    let bvt = BVT::new_balanced(leaves.clone());
+    let mut pickable_mask: Vec<bool> = vec![];
+    for (i, cube) in cubes.iter().enumerate() {
+        let half_extents = cube.cuboid.half_extents;
+        let center_top = cube
+            .tf
+            .transform_point(&na::Point3::new(0.0, 0.0, half_extents[2]));
+        let ray = Ray::new(center_top, na::Vector3::new(0.0, 0.0, 1.0));
+
+        let mut interferences = Vec::new();
+        let mut visitor = RayInterferencesCollector::new(&ray, f64::INFINITY, &mut interferences);
+        bvt.visit(&mut visitor);
+
+        let mut smallest_toi = f64::INFINITY;
+        for j in interferences.iter() {
+            if i == *j {
+                continue;
+            }
+            let cube = &cubes[*j];
+            let tf = cube.tf;
+            let toi = cube.cuboid.toi_with_ray(&tf, &ray, f64::INFINITY, true);
+            if let Some(toi) = toi {
+                if toi < smallest_toi {
+                    smallest_toi = toi;
+                }
+            }
         }
+        pickable_mask.push(smallest_toi == f64::INFINITY);
     }
+    pickable_mask
+}
 
-    if json_files.len() != 1 {
-        panic!("There must be exactly 1 JSON files in the input directory");
-    }
+fn main() {
+    let start_time = std::time::Instant::now();
+    let args = Cli::parse();
 
+    // load
     let cube_serdes = serde_json::from_str::<Vec<CubeSerde>>(
-        &std::fs::read_to_string(&json_files[0]).expect("Failed to read JSON file"),
+        &std::fs::read_to_string(&args.input).expect("Failed to read JSON file"),
     )
     .unwrap();
 
@@ -45,87 +73,12 @@ fn load_from_directory(dir: &str) -> Vec<CuboidWithTf> {
         .map(|t| CuboidWithTf::from_cube_serde(t))
         .collect();
 
-    cubes
-}
+    // pickable
+    let pickable_mask = pickable(&cubes);
 
-fn align_axis(cube: &mut CuboidWithTf) {
-    // find Z axis
-    let mut candidates = vec![];
-    let mut temp = cube.clone();
-    candidates.push(temp.clone());
-    temp.rot_x_90();
-    candidates.push(temp.clone());
-    temp.rot_x_90();
-    candidates.push(temp.clone());
-    temp.rot_x_90();
-    candidates.push(temp.clone());
-    temp.rot_x_90();
-    temp.rot_y_90();
-    candidates.push(temp.clone());
-    temp.rot_y_90();
-    temp.rot_y_90();
-    candidates.push(temp.clone());
-
-    let mut max_index = 0;
-    let mut max_value = f64::MIN;
-    for (i, c) in candidates.iter().enumerate() {
-        let matrix = c.tf.to_matrix();
-        let dot_z = matrix[(2, 2)];
-        if dot_z > max_value {
-            max_value = dot_z;
-            max_index = i;
-        }
-    }
-
-    temp = candidates[max_index].clone();
-
-    // find X axis
-    candidates.clear();
-    candidates.push(temp.clone());
-    temp.rot_z_90();
-    candidates.push(temp.clone());
-    temp.rot_z_90();
-    candidates.push(temp.clone());
-    temp.rot_z_90();
-    candidates.push(temp.clone());
-
-    let mut max_index = 0;
-    let mut max_value = f64::MIN;
-    for (i, c) in candidates.iter().enumerate() {
-        let matrix = c.tf.to_matrix();
-        let dot_x = matrix[(0, 0)];
-        if dot_x > max_value {
-            max_value = dot_x;
-            max_index = i;
-        }
-    }
-
-    *cube = candidates[max_index].clone();
-}
-
-fn main() {
-    let args = Cli::parse();
-    let mut cubes = load_from_directory(&args.input_dir);
-
-    for cube in cubes.iter_mut() {
-        align_axis(cube);
-    }
-
-    let cube_serdes = cubes
-        .iter()
-        .map(|c| {
-            let tf = c.tf.to_homogeneous();
-            let size = c.cuboid.half_extents * 2.0;
-            CubeSerde {
-                tf: tf
-                    .row_iter()
-                    .map(|row| row.iter().map(|x| *x).collect())
-                    .collect(),
-                size: size.iter().map(|x| *x).collect(),
-            }
-        })
-        .collect::<Vec<CubeSerde>>();
-
-    let json_data = serde_json::to_string(&cube_serdes).unwrap();
-    std::fs::write(format!("{}/output.json", args.output_dir), json_data).unwrap();
+    // save
+    let json_data = serde_json::to_string(&pickable_mask).unwrap();
+    std::fs::write(args.output, json_data).unwrap();
+    let duration = start_time.elapsed();
+    println!("Time elapsed: {:?}", duration);
 }

@@ -8,6 +8,20 @@ pub struct CubeSerde {
     pub size: Vec<f64>,
 }
 
+impl CubeSerde {
+    pub fn from_cube(c: &CuboidWithTf) -> Self {
+        let tf = c.tf.to_homogeneous();
+        let size = c.cuboid.half_extents * 2.0;
+        CubeSerde {
+            tf: tf
+                .row_iter()
+                .map(|row| row.iter().map(|x| *x).collect())
+                .collect(),
+            size: size.iter().map(|x| *x).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CuboidWithTf {
     pub cuboid: Cuboid<f64>,
