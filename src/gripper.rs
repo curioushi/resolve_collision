@@ -1,5 +1,7 @@
 use crate::common::{isometry_to_vec, vec_to_isometry};
-use geo_types::{coord, LineString, Polygon};
+use geo::algorithm::{Area, BooleanOps, Translate};
+use geo::Intersects;
+use geo_types::{coord, LineString, Polygon, Rect};
 use ncollide3d::na;
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +56,7 @@ pub struct PickPlanSerde {
     pub score: f64,
     pub tf_world_tip: Vec<Vec<f64>>,
     pub tf_world_flange: Vec<Vec<f64>>,
-    pub suction_group_indices: Vec<usize>,
+    pub suction_group_mask: Vec<bool>,
     pub main_box_index: usize,
     pub other_box_indices: Vec<usize>,
 }
@@ -65,7 +67,7 @@ impl PickPlanSerde {
             score: plan.score,
             tf_world_tip: isometry_to_vec(&plan.tf_world_tip),
             tf_world_flange: isometry_to_vec(&plan.tf_world_flange),
-            suction_group_indices: plan.suction_group_indices.clone(),
+            suction_group_mask: plan.suction_group_mask.clone(),
             main_box_index: plan.main_box_index,
             other_box_indices: plan.other_box_indices.clone(),
         }
@@ -76,7 +78,7 @@ impl PickPlanSerde {
             score: self.score,
             tf_world_tip: vec_to_isometry(&self.tf_world_tip),
             tf_world_flange: vec_to_isometry(&self.tf_world_flange),
-            suction_group_indices: self.suction_group_indices.clone(),
+            suction_group_mask: self.suction_group_mask.clone(),
             main_box_index: self.main_box_index,
             other_box_indices: self.other_box_indices.clone(),
         }
@@ -94,12 +96,47 @@ pub struct Gripper {
     pub suction_groups: Vec<SuctionGroup>,
 }
 
+impl Gripper {
+    pub fn suction_areas(&self) -> Vec<f64> {
+        let areas: Vec<f64> = self
+            .suction_groups
+            .iter()
+            .map(|sg| sg.shape.unsigned_area())
+            .collect();
+        areas
+    }
+    pub fn suction_rect(&self) -> Rect {
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        for sg in self.suction_groups.iter() {
+            for p in sg.shape.exterior() {
+                min_x = min_x.min(p.x);
+                min_y = min_y.min(p.y);
+                max_x = max_x.max(p.x);
+                max_y = max_y.max(p.y);
+            }
+        }
+        Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y})
+    }
+    pub fn intersection_areas(&self, polygon: &Polygon, dx: f64, dy: f64) -> Vec<f64> {
+        let polygon = polygon.translate(-dx, -dy); // multiply by -1 for gripper translation
+        let areas: Vec<f64> = self
+            .suction_groups
+            .iter()
+            .map(|sg| sg.shape.intersection(&polygon).unsigned_area())
+            .collect();
+        areas
+    }
+}
+
 #[derive(Debug)]
 pub struct PickPlan {
     pub score: f64,
     pub tf_world_tip: na::Isometry3<f64>,
     pub tf_world_flange: na::Isometry3<f64>,
-    pub suction_group_indices: Vec<usize>,
+    pub suction_group_mask: Vec<bool>,
     pub main_box_index: usize,
     pub other_box_indices: Vec<usize>,
 }
