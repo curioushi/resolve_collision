@@ -2,6 +2,24 @@ use ncollide3d::na;
 use ncollide3d::shape::Cuboid;
 use serde::{Deserialize, Serialize};
 
+pub fn isometry_to_vec(isometry: &na::Isometry3<f64>) -> Vec<Vec<f64>> {
+    let tf = isometry.to_homogeneous();
+    tf.row_iter()
+        .map(|row| row.iter().map(|x| *x).collect())
+        .collect()
+}
+
+pub fn vec_to_isometry(vec: &Vec<Vec<f64>>) -> na::Isometry3<f64> {
+    na::Isometry3::from_parts(
+        na::Translation3::new(vec[0][3], vec[1][3], vec[2][3]),
+        na::UnitQuaternion::from_matrix(&na::Matrix3::from_columns(&[
+            na::Vector3::new(vec[0][0], vec[1][0], vec[2][0]),
+            na::Vector3::new(vec[0][1], vec[1][1], vec[2][1]),
+            na::Vector3::new(vec[0][2], vec[1][2], vec[2][2]),
+        ])),
+    )
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CubeSerde {
     pub tf: Vec<Vec<f64>>,
@@ -10,13 +28,9 @@ pub struct CubeSerde {
 
 impl CubeSerde {
     pub fn from_cube(c: &CuboidWithTf) -> Self {
-        let tf = c.tf.to_homogeneous();
         let size = c.cuboid.half_extents * 2.0;
         CubeSerde {
-            tf: tf
-                .row_iter()
-                .map(|row| row.iter().map(|x| *x).collect())
-                .collect(),
+            tf: isometry_to_vec(&c.tf),
             size: size.iter().map(|x| *x).collect(),
         }
     }
@@ -30,17 +44,10 @@ pub struct CuboidWithTf {
 
 impl CuboidWithTf {
     pub fn from_cube_serde(c: &CubeSerde) -> Self {
-        let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-            na::Vector3::new(c.tf[0][0], c.tf[1][0], c.tf[2][0]),
-            na::Vector3::new(c.tf[0][1], c.tf[1][1], c.tf[2][1]),
-            na::Vector3::new(c.tf[0][2], c.tf[1][2], c.tf[2][2]),
-        ]));
-        let translation = na::Translation3::new(c.tf[0][3], c.tf[1][3], c.tf[2][3]);
-        let tf = na::Isometry3::from_parts(translation, rotmat.into());
         let size = na::Vector3::new(c.size[0], c.size[1], c.size[2]);
         CuboidWithTf {
             cuboid: Cuboid::new(size / 2.0),
-            tf,
+            tf: vec_to_isometry(&c.tf),
         }
     }
 

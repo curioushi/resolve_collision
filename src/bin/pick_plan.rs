@@ -68,6 +68,7 @@ fn top_pick(
         pick_plans.push(PickPlan {
             score: 1.0,
             tf_world_tip: base_tip_tf,
+            tf_world_flange: base_tip_tf * gripper.tf_flange_tip.inverse(),
             suction_group_indices: vec![0],
             main_box_index: i,
             other_box_indices: vec![],
