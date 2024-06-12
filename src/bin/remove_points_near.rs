@@ -4,8 +4,8 @@ use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::PointInterferencesCollector;
 use ncollide3d::query::PointQuery;
-use ncollide3d::shape::{Cuboid, TriMesh};
-use resolve_collision::common::{CubeSerde, CuboidWithTf};
+use ncollide3d::shape::TriMesh;
+use resolve_collision::common::CuboidWithTf;
 use resolve_collision::pcd_io::{read_pcd, write_pcd};
 use std::vec;
 use stl_io::read_stl;
@@ -49,15 +49,10 @@ fn load_from_directory(
         panic!("There must be exactly 2 JSON files in the input directory");
     }
 
-    let cube_serdes = serde_json::from_str::<Vec<CubeSerde>>(
+    let cubes = serde_json::from_str::<Vec<CuboidWithTf>>(
         &std::fs::read_to_string(&json_files[0]).expect("Failed to read JSON file"),
     )
     .unwrap();
-
-    let cubes: Vec<CuboidWithTf> = cube_serdes
-        .iter()
-        .map(|t| CuboidWithTf::from_cube_serde(t))
-        .collect();
 
     let mut pc: Vec<na::Point3<f64>> = vec![];
     if pcd_files.len() == 1 {
@@ -97,7 +92,7 @@ fn remove_points_near(
     let mut points_to_remove: Vec<na::Point3<f64>> = vec![];
     let mut leaves: Vec<(usize, BoundingSphere<f64>)> = vec![];
     for (index, cube) in cubes.iter().enumerate() {
-        let mut bs = bounding_sphere(&cube.cuboid, &cube.tf);
+        let mut bs = bounding_sphere(cube.cuboid.as_ref(), &cube.tf);
         bs.loosen(margin);
         leaves.push((index, bs));
     }

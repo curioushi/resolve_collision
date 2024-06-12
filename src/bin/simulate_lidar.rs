@@ -8,8 +8,8 @@ use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
-use ncollide3d::shape::{Cuboid, TriMesh};
-use resolve_collision::common::{CubeSerde, CuboidWithTf};
+use ncollide3d::shape::TriMesh;
+use resolve_collision::common::CuboidWithTf;
 use resolve_collision::pcd_io::write_pcd_with_normal;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -56,17 +56,18 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
         panic!("There must be exactly 2 JSON files in the input directory");
     }
 
-    let mut cube_serdes: Vec<CubeSerde> = vec![];
-    let mut lidar_serdes: Vec<LidarSerde> = vec![];
     let str1 = std::fs::read_to_string(&json_files[0]).unwrap();
     let str2 = std::fs::read_to_string(&json_files[1]).unwrap();
-    if let Ok(cubes) = serde_json::from_str::<Vec<CubeSerde>>(&str1) {
-        cube_serdes = cubes;
-        lidar_serdes = serde_json::from_str::<Vec<LidarSerde>>(&str2).unwrap();
-    } else {
-        cube_serdes = serde_json::from_str::<Vec<CubeSerde>>(&str2).unwrap();
-        lidar_serdes = serde_json::from_str::<Vec<LidarSerde>>(&str1).unwrap();
-    }
+    let (cubes, lidar_serdes) = match serde_json::from_str::<Vec<CuboidWithTf>>(&str1) {
+        Ok(temp) => (
+            temp,
+            serde_json::from_str::<Vec<LidarSerde>>(&str2).unwrap(),
+        ),
+        Err(_) => (
+            serde_json::from_str::<Vec<CuboidWithTf>>(&str2).unwrap(),
+            serde_json::from_str::<Vec<LidarSerde>>(&str1).unwrap(),
+        ),
+    };
 
     let lidars: Vec<LidarInfo> = lidar_serdes
         .iter()
@@ -84,11 +85,6 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
                 num_frames: t.num_frames,
             }
         })
-        .collect();
-
-    let cubes: Vec<CuboidWithTf> = cube_serdes
-        .iter()
-        .map(|t| CuboidWithTf::from_cube_serde(t))
         .collect();
 
     if stl_files.len() == 1 {
@@ -154,7 +150,7 @@ fn ray_casting(
     for (index, cube) in cubes.iter().enumerate() {
         leaves.push((
             index,
-            bounding_sphere::bounding_sphere(&cube.cuboid, &cube.tf),
+            bounding_sphere::bounding_sphere(cube.cuboid.as_ref(), &cube.tf),
         ));
     }
 
@@ -171,7 +167,7 @@ fn ray_casting(
         let mut cube_index: Option<usize> = None;
         for i in interferences.iter() {
             let cube = &cubes[*i];
-            let tf = cube.tf;
+            let tf = cube.tf.as_ref();
             let toi = cube.cuboid.toi_with_ray(&tf, &ray, f64::INFINITY, true);
             if let Some(toi) = toi {
                 if toi < smallest_toi {
@@ -281,14 +277,17 @@ fn compute_visibility(cube: &CuboidWithTf, cube_points: &Vec<na::Point3<f64>>) -
 }
 
 fn main() {
+    let time1 = std::time::Instant::now();
     let args = Cli::parse();
     let (cubes, scene_mesh, lidars) = load_from_directory(&args.input_dir);
+    let time2 = std::time::Instant::now();
     let rays = lidars
         .iter()
         .map(|l| create_rays(l))
         .collect::<Vec<Vec<Ray<f64>>>>();
     let rays: Vec<Ray<f64>> = rays.iter().flatten().cloned().collect();
     let (points, normals, cube_points) = ray_casting(&cubes, &scene_mesh, &rays);
+    let time3 = std::time::Instant::now();
     write_pcd_with_normal(&points, &normals, &args.output_dir);
 
     // write visibility to file
@@ -300,4 +299,8 @@ fn main() {
     let mut file = std::fs::File::create(format!("{}/visibility.json", args.output_dir)).unwrap();
     file.write_all(serde_json::to_string(&visibility).unwrap().as_bytes())
         .unwrap();
+    let time4 = std::time::Instant::now();
+    println!("Deserialize time: {:?}", time2 - time1);
+    println!("Ray casting time: {:?}", time3 - time2);
+    println!("Serialize time: {:?}", time4 - time3);
 }

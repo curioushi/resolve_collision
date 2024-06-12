@@ -1,6 +1,5 @@
 use crate::common::{isometry_to_vec, vec_to_isometry};
 use geo::algorithm::{Area, BooleanOps, Translate};
-use geo::Intersects;
 use geo_types::{coord, LineString, Polygon, Rect};
 use ncollide3d::na;
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,7 @@ pub struct SuctionGroupSerde {
 pub struct GripperSerde {
     pub tf_flange_tip: Vec<Vec<f64>>,
     pub suction_groups: Vec<SuctionGroupSerde>,
+    pub max_payload: f64,
 }
 
 impl GripperSerde {
@@ -30,6 +30,7 @@ impl GripperSerde {
         Self {
             tf_flange_tip: isometry_to_vec(&gripper.tf_flange_tip),
             suction_groups,
+            max_payload: gripper.max_payload,
         }
     }
 
@@ -47,6 +48,7 @@ impl GripperSerde {
         Gripper {
             tf_flange_tip: vec_to_isometry(&self.tf_flange_tip),
             suction_groups,
+            max_payload: self.max_payload,
         }
     }
 }
@@ -94,6 +96,8 @@ pub struct SuctionGroup {
 pub struct Gripper {
     pub tf_flange_tip: na::Isometry3<f64>,
     pub suction_groups: Vec<SuctionGroup>,
+    // pub collision_shape: Compound<f64>,
+    pub max_payload: f64,
 }
 
 impl Gripper {

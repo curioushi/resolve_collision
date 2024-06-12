@@ -1,12 +1,14 @@
 use clap::Parser;
-use geo::Area;
-use geo::BooleanOps;
 use geo::Coord;
-use geo_types::{coord, LineString, MultiPolygon, Polygon, Rect};
+use geo_types::{coord, Rect};
 use ncollide3d::na;
 use ndarray::Array;
-use resolve_collision::common::{CubeSerde, CuboidWithTf};
+use resolve_collision::common::CuboidWithTf;
 use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanSerde};
+
+const DENSITY_WATER: f64 = 997.0;
+const DENSITY_WATER_BOX: f64 = DENSITY_WATER * std::f64::consts::PI / 4.0;
+const DENSITY_LIGHT_BOX: f64 = 0.3 * DENSITY_WATER_BOX;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -25,13 +27,8 @@ struct Cli {
 
 fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper) {
     let json_file = std::fs::File::open(&args.boxes).expect("Failed to open JSON file");
-    let cubes_serde: Vec<CubeSerde> =
+    let cubes: Vec<CuboidWithTf> =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
-
-    let mut cubes = vec![];
-    for c in cubes_serde.iter() {
-        cubes.push(CuboidWithTf::from_cube_serde(c));
-    }
 
     let json_file = std::fs::File::open(&args.pickable).expect("Failed to open JSON file");
     let pickable_mask: Vec<bool> =
@@ -60,6 +57,13 @@ where
     let suction_rect = gripper.suction_rect();
     for (i, (cube, pickable)) in cubes.iter().zip(pickable_mask.iter()).enumerate() {
         if !pickable {
+            continue;
+        }
+        let hsize = cube.cuboid.half_extents;
+        let volume = 8.0 * hsize[0] * hsize[1] * hsize[2];
+        let weight = volume * DENSITY_LIGHT_BOX;
+        println!("Weight: {}", weight);
+        if weight > gripper.max_payload {
             continue;
         }
         let (face_points, base_tip_tf) = initial_guess(cube);
@@ -127,8 +131,8 @@ where
                         .collect();
                     let suction_group_mask: Vec<bool> =
                         inter_percents.iter().map(|x| x > &0.5).collect();
-                    // let score = inter_percents.iter().fold(0.0, |acc, x| acc + x)
-                    //     / inter_percents.len() as f64;
+
+                    // TODO: check weight if other_box_indices is not empty
                     pick_plans.push(PickPlan {
                         score: 1.0,
                         tf_world_tip: tf_world_tip * tf_offset,
@@ -178,11 +182,17 @@ fn main() {
         let base_tip_tf = na::Isometry3::from_parts(
             na::Translation3::new(position.x, position.y, position.z),
             c.tf.rotation
-                * na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f64::consts::FRAC_PI_2),
+                * na::Rotation3::from_axis_angle(
+                    &na::Vector3::y_axis(),
+                    std::f64::consts::FRAC_PI_2,
+                ),
         );
         (face_points, base_tip_tf)
     });
-    let pick_plans: Vec<PickPlan> = top_pick_plans.into_iter().chain(side_pick_plans.into_iter()).collect();
+    let pick_plans: Vec<PickPlan> = top_pick_plans
+        .into_iter()
+        .chain(side_pick_plans.into_iter())
+        .collect();
     let time3 = std::time::Instant::now();
 
     let pick_plan_serdes: Vec<PickPlanSerde> = pick_plans

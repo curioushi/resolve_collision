@@ -2,7 +2,7 @@ use clap::Parser;
 use ncollide3d as n3d;
 use ncollide3d::na;
 use ncollide3d::shape::Cuboid;
-use resolve_collision::common::{CubeSerde, CuboidWithTf};
+use resolve_collision::common::{CuboidSerde, CuboidWithTf, Isometry3Serde};
 
 fn shrink_by_point<T>(
     tf: &na::Isometry3<T>,
@@ -92,21 +92,18 @@ fn main() {
     let start_time = std::time::Instant::now();
     let mut cubes: Vec<CuboidWithTf> = Vec::new();
     if let Ok(json_data) = std::fs::read_to_string(args.input) {
-        let cubes_serde: Vec<CubeSerde> = serde_json::from_str(&json_data).unwrap();
-        for c in cubes_serde.iter() {
-            cubes.push(CuboidWithTf::from_cube_serde(c));
-        }
+        cubes = serde_json::from_str::<Vec<CuboidWithTf>>(&json_data).unwrap();
     }
 
     for i in 0..cubes.len() {
         for j in i + 1..cubes.len() {
-            let mut cuboid1 = cubes[i].cuboid;
-            let tf1 = cubes[i].tf;
-            let mut cuboid2 = cubes[j].cuboid;
-            let tf2 = cubes[j].tf;
+            let mut cuboid1 = *cubes[i].cuboid;
+            let tf1 = *cubes[i].tf;
+            let mut cuboid2 = *cubes[j].cuboid;
+            let tf2 = *cubes[j].tf;
             resolve_contact_by_shrink(&tf1, &mut cuboid1, &tf2, &mut cuboid2, true);
-            cubes[i].cuboid = cuboid1;
-            cubes[j].cuboid = cuboid2;
+            *cubes[i].cuboid = cuboid1;
+            *cubes[j].cuboid = cuboid2;
         }
     }
 
@@ -132,39 +129,27 @@ fn main() {
         let walls: Vec<CuboidWithTf> = translations
             .iter()
             .map(|t| CuboidWithTf {
-                cuboid: Cuboid::new(size / 2.0),
-                tf: na::Isometry3::from_parts(*t, na::UnitQuaternion::identity()),
+                cuboid: CuboidSerde::new(size / 2.0),
+                tf: Isometry3Serde::new(na::Isometry3::from_parts(
+                    *t,
+                    na::UnitQuaternion::identity(),
+                )),
             })
             .collect();
 
         for i in 0..cubes.len() {
             for wall in walls.iter() {
-                let mut cuboid1 = cubes[i].cuboid;
-                let tf1 = cubes[i].tf;
-                let mut cuboid2 = wall.cuboid;
-                let tf2 = wall.tf;
+                let mut cuboid1 = *cubes[i].cuboid;
+                let tf1 = *cubes[i].tf;
+                let mut cuboid2 = *wall.cuboid;
+                let tf2 = *wall.tf;
                 resolve_contact_by_shrink(&tf1, &mut cuboid1, &tf2, &mut cuboid2, false);
-                cubes[i].cuboid = cuboid1;
+                *cubes[i].cuboid = cuboid1;
             }
         }
     }
 
-    let cube_serdes = cubes
-        .iter()
-        .map(|c| {
-            let tf = c.tf.to_homogeneous();
-            let size = c.cuboid.half_extents * 2.0;
-            CubeSerde {
-                tf: tf
-                    .row_iter()
-                    .map(|row| row.iter().map(|x| *x).collect())
-                    .collect(),
-                size: size.iter().map(|x| *x).collect(),
-            }
-        })
-        .collect::<Vec<CubeSerde>>();
-
-    let json_data = serde_json::to_string(&cube_serdes).unwrap();
+    let json_data = serde_json::to_string(&cubes).unwrap();
     std::fs::write(args.output, json_data).unwrap();
     let end_time = std::time::Instant::now();
     println!("Elapsed time: {:?}", end_time - start_time);

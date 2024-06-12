@@ -7,7 +7,7 @@ use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
-use resolve_collision::common::{CubeSerde, CuboidWithTf};
+use resolve_collision::common::CuboidWithTf;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -23,7 +23,7 @@ fn pickable(cubes: &Vec<CuboidWithTf>) -> Vec<bool> {
     for (index, cube) in cubes.iter().enumerate() {
         leaves.push((
             index,
-            bounding_sphere::bounding_sphere(&cube.cuboid, &cube.tf),
+            bounding_sphere::bounding_sphere(cube.cuboid.as_ref(), &cube.tf),
         ));
     }
     let bvt = BVT::new_balanced(leaves.clone());
@@ -45,7 +45,7 @@ fn pickable(cubes: &Vec<CuboidWithTf>) -> Vec<bool> {
                 continue;
             }
             let cube = &cubes[*j];
-            let tf = cube.tf;
+            let tf = cube.tf.as_ref();
             let toi = cube.cuboid.toi_with_ray(&tf, &ray, f64::INFINITY, true);
             if let Some(toi) = toi {
                 if toi < smallest_toi {
@@ -63,15 +63,10 @@ fn main() {
     let args = Cli::parse();
 
     // load
-    let cube_serdes = serde_json::from_str::<Vec<CubeSerde>>(
+    let cubes = serde_json::from_str::<Vec<CuboidWithTf>>(
         &std::fs::read_to_string(&args.input).expect("Failed to read JSON file"),
     )
     .unwrap();
-
-    let cubes: Vec<CuboidWithTf> = cube_serdes
-        .iter()
-        .map(|t| CuboidWithTf::from_cube_serde(t))
-        .collect();
 
     // pickable
     let pickable_mask = pickable(&cubes);
