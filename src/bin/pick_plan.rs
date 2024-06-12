@@ -1,14 +1,18 @@
 use clap::Parser;
 use geo::Coord;
 use geo_types::{coord, Rect};
+use ncollide3d::bounding_volume::{HasBoundingVolume, AABB};
 use ncollide3d::na;
+use ncollide3d::partitioning::{BVH, BVT};
+use ncollide3d::query;
+use ncollide3d::query::visitors::BoundingVolumeInterferencesCollector;
 use ndarray::Array;
-use resolve_collision::common::CuboidWithTf;
-use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanSerde};
+use resolve_collision::common::{CuboidWithTf, Isometry3Serde};
+use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions};
 
 const DENSITY_WATER: f64 = 997.0;
 const DENSITY_WATER_BOX: f64 = DENSITY_WATER * std::f64::consts::PI / 4.0;
-const DENSITY_LIGHT_BOX: f64 = 0.3 * DENSITY_WATER_BOX;
+const DENSITY_LIGHT_BOX: f64 = 0.1 * DENSITY_WATER_BOX;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -21,11 +25,14 @@ struct Cli {
     #[arg(short, long)]
     gripper: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
+    options: String,
+
+    #[arg(long)]
     output: String,
 }
 
-fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper) {
+fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper, PickPlanOptions) {
     let json_file = std::fs::File::open(&args.boxes).expect("Failed to open JSON file");
     let cubes: Vec<CuboidWithTf> =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
@@ -38,15 +45,22 @@ fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper) {
     let gripper_serde: GripperSerde =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
 
+    let json_file = std::fs::File::open(&args.options).expect("Failed to open JSON file");
+    let mut options: PickPlanOptions = PickPlanOptions::default();
+    let new_options: PickPlanOptions =
+        serde_json::from_reader(json_file).expect("Failed to read JSON file");
+    options.overwrite_from(&new_options);
+
     let gripper = gripper_serde.to_gripper();
 
-    (cubes, pickable_mask, gripper)
+    (cubes, pickable_mask, gripper, options)
 }
 
 fn simple_pick<F>(
     cubes: &Vec<CuboidWithTf>,
     pickable_mask: &Vec<bool>,
     gripper: &Gripper,
+    options: &PickPlanOptions,
     initial_guess: F,
 ) -> Vec<PickPlan>
 where
@@ -63,7 +77,7 @@ where
         let volume = 8.0 * hsize[0] * hsize[1] * hsize[2];
         let weight = volume * DENSITY_LIGHT_BOX;
         println!("Weight: {}", weight);
-        if weight > gripper.max_payload {
+        if weight > options.max_payload.unwrap() {
             continue;
         }
         let (face_points, base_tip_tf) = initial_guess(cube);
@@ -135,8 +149,10 @@ where
                     // TODO: check weight if other_box_indices is not empty
                     pick_plans.push(PickPlan {
                         score: 1.0,
-                        tf_world_tip: tf_world_tip * tf_offset,
-                        tf_world_flange: tf_world_tip * tf_offset * gripper.tf_flange_tip.inverse(),
+                        tf_world_tip: Isometry3Serde::new(tf_world_tip * tf_offset),
+                        tf_world_flange: Isometry3Serde::new(
+                            tf_world_tip * tf_offset * gripper.tf_flange_tip.inverse(),
+                        ),
                         suction_group_mask,
                         main_box_index: i,
                         other_box_indices: vec![],
@@ -148,13 +164,53 @@ where
     pick_plans
 }
 
+fn collision_check(
+    pick_plans: &Vec<PickPlan>,
+    cubes: &Vec<CuboidWithTf>,
+    gripper: &Gripper,
+    options: &PickPlanOptions,
+) -> Vec<bool> {
+    let mut leaves: Vec<(usize, AABB<f64>)> = vec![];
+    for (i, c) in cubes.iter().enumerate() {
+        let aabb: AABB<f64> = c.cuboid.bounding_volume(&c.tf);
+        leaves.push((i, aabb));
+    }
+    let bvt = BVT::new_balanced(leaves.clone());
+    let mut collision_mask = vec![false; pick_plans.len()];
+    for (i, pick_plan) in pick_plans.iter().enumerate() {
+        let bv: AABB<f64> = gripper
+            .collision_shape
+            .bounding_volume(&pick_plan.tf_world_flange);
+        let mut inters: Vec<usize> = vec![];
+        let mut visitor = BoundingVolumeInterferencesCollector::new(&bv, &mut inters);
+        bvt.visit(&mut visitor);
+        for j in inters.iter() {
+            if pick_plan.main_box_index == *j {
+                continue;
+            }
+            let distance = query::distance_composite_shape_shape(
+                pick_plan.tf_world_flange.as_ref(),
+                &gripper.collision_shape,
+                cubes[*j].tf.as_ref(),
+                cubes[*j].cuboid.as_ref(),
+            );
+            if distance <= options.dsafe.unwrap() {
+                collision_mask[i] = true;
+                break;
+            }
+        }
+    }
+    collision_mask
+}
+
 fn main() {
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
-    let (cubes, pickable_mask, gripper) = load_from_args(&args);
+    let (cubes, pickable_mask, gripper, options) = load_from_args(&args);
+    println!("Options: {:?}", options);
 
     let time2 = std::time::Instant::now();
-    let top_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, |c| {
+    let top_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, &options, |c| {
         let hsize = c.cuboid.half_extents;
         let face_points = vec![
             c.tf.transform_point(&na::Point3::new(hsize[0], hsize[1], hsize[2])),
@@ -170,7 +226,7 @@ fn main() {
         );
         (face_points, base_tip_tf)
     });
-    let side_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, |c| {
+    let side_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, &options, |c| {
         let hsize = c.cuboid.half_extents;
         let face_points = vec![
             c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
@@ -193,14 +249,17 @@ fn main() {
         .into_iter()
         .chain(side_pick_plans.into_iter())
         .collect();
+    let collision_mask = collision_check(&pick_plans, &cubes, &gripper, &options);
+    let pick_plans: Vec<PickPlan> = pick_plans
+        .into_iter()
+        .zip(collision_mask.into_iter())
+        .filter(|(_, b)| !b)
+        .map(|(p, _)| p)
+        .collect();
     let time3 = std::time::Instant::now();
 
-    let pick_plan_serdes: Vec<PickPlanSerde> = pick_plans
-        .iter()
-        .map(|p| PickPlanSerde::from_pick_plan(p))
-        .collect();
     let output_file = std::fs::File::create(&args.output).expect("Failed to create JSON file");
-    serde_json::to_writer(output_file, &pick_plan_serdes).expect("Failed to write JSON file");
+    serde_json::to_writer(output_file, &pick_plans).expect("Failed to write JSON file");
     let time4 = std::time::Instant::now();
     println!("CLI + Load Json time: {:?}", time2 - time1);
     println!("Pick Plan time: {:?}", time3 - time2);

@@ -1,7 +1,8 @@
-use crate::common::{isometry_to_vec, vec_to_isometry};
+use crate::common::{isometry_to_vec, vec_to_isometry, CuboidSerde, CuboidWithTf, Isometry3Serde};
 use geo::algorithm::{Area, BooleanOps, Translate};
 use geo_types::{coord, LineString, Polygon, Rect};
 use ncollide3d::na;
+use ncollide3d::shape::{Compound, Cuboid, ShapeHandle};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -13,7 +14,7 @@ pub struct SuctionGroupSerde {
 pub struct GripperSerde {
     pub tf_flange_tip: Vec<Vec<f64>>,
     pub suction_groups: Vec<SuctionGroupSerde>,
-    pub max_payload: f64,
+    pub collision_shape: Vec<CuboidWithTf>,
 }
 
 impl GripperSerde {
@@ -26,11 +27,18 @@ impl GripperSerde {
             }
             suction_groups.push(SuctionGroupSerde { shape });
         }
-
+        let mut collision_shape = vec![];
+        for (tf, shape) in gripper.collision_shape.shapes().iter() {
+            let cuboid = shape.downcast_ref::<Cuboid<f64>>().unwrap();
+            collision_shape.push(CuboidWithTf {
+                cuboid: CuboidSerde::new(cuboid.half_extents),
+                tf: Isometry3Serde::new(tf.clone()),
+            });
+        }
         Self {
             tf_flange_tip: isometry_to_vec(&gripper.tf_flange_tip),
             suction_groups,
-            max_payload: gripper.max_payload,
+            collision_shape,
         }
     }
 
@@ -44,45 +52,16 @@ impl GripperSerde {
             let shape = Polygon::new(LineString::new(points), vec![]);
             suction_groups.push(SuctionGroup { shape });
         }
+        let mut shapes = vec![];
+        for c_with_tf in self.collision_shape.iter() {
+            shapes.push((*c_with_tf.tf, ShapeHandle::new(*c_with_tf.cuboid)))
+        }
+        let collision_shape = Compound::new(shapes);
 
         Gripper {
             tf_flange_tip: vec_to_isometry(&self.tf_flange_tip),
             suction_groups,
-            max_payload: self.max_payload,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PickPlanSerde {
-    pub score: f64,
-    pub tf_world_tip: Vec<Vec<f64>>,
-    pub tf_world_flange: Vec<Vec<f64>>,
-    pub suction_group_mask: Vec<bool>,
-    pub main_box_index: usize,
-    pub other_box_indices: Vec<usize>,
-}
-
-impl PickPlanSerde {
-    pub fn from_pick_plan(plan: &PickPlan) -> Self {
-        Self {
-            score: plan.score,
-            tf_world_tip: isometry_to_vec(&plan.tf_world_tip),
-            tf_world_flange: isometry_to_vec(&plan.tf_world_flange),
-            suction_group_mask: plan.suction_group_mask.clone(),
-            main_box_index: plan.main_box_index,
-            other_box_indices: plan.other_box_indices.clone(),
-        }
-    }
-
-    pub fn to_pick_plan(&self) -> PickPlan {
-        PickPlan {
-            score: self.score,
-            tf_world_tip: vec_to_isometry(&self.tf_world_tip),
-            tf_world_flange: vec_to_isometry(&self.tf_world_flange),
-            suction_group_mask: self.suction_group_mask.clone(),
-            main_box_index: self.main_box_index,
-            other_box_indices: self.other_box_indices.clone(),
+            collision_shape,
         }
     }
 }
@@ -92,12 +71,10 @@ pub struct SuctionGroup {
     pub shape: Polygon,
 }
 
-#[derive(Debug)]
 pub struct Gripper {
     pub tf_flange_tip: na::Isometry3<f64>,
     pub suction_groups: Vec<SuctionGroup>,
-    // pub collision_shape: Compound<f64>,
-    pub max_payload: f64,
+    pub collision_shape: Compound<f64>,
 }
 
 impl Gripper {
@@ -135,12 +112,38 @@ impl Gripper {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PickPlan {
     pub score: f64,
-    pub tf_world_tip: na::Isometry3<f64>,
-    pub tf_world_flange: na::Isometry3<f64>,
+    pub tf_world_tip: Isometry3Serde,
+    pub tf_world_flange: Isometry3Serde,
     pub suction_group_mask: Vec<bool>,
     pub main_box_index: usize,
     pub other_box_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PickPlanOptions {
+    pub max_payload: Option<f64>,
+    pub dsafe: Option<f64>,
+}
+
+impl Default for PickPlanOptions {
+    fn default() -> Self {
+        Self {
+            max_payload: Some(35.0),
+            dsafe: Some(0.0),
+        }
+    }
+}
+
+impl PickPlanOptions {
+    pub fn overwrite_from(&mut self, other: &PickPlanOptions) {
+        if other.max_payload.is_some() {
+            self.max_payload = other.max_payload;
+        }
+        if other.dsafe.is_some() {
+            self.dsafe = other.dsafe;
+        }
+    }
 }
