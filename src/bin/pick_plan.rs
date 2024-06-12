@@ -7,7 +7,7 @@ use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query;
 use ncollide3d::query::visitors::BoundingVolumeInterferencesCollector;
 use ndarray::Array;
-use resolve_collision::common::{CuboidWithTf, Isometry3Serde};
+use resolve_collision::common::{Container, CuboidWithTf, Isometry3Serde};
 use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions};
 
 const DENSITY_WATER: f64 = 997.0;
@@ -18,6 +18,9 @@ const DENSITY_LIGHT_BOX: f64 = 0.1 * DENSITY_WATER_BOX;
 struct Cli {
     #[arg(short, long)]
     boxes: String,
+
+    #[arg(short, long)]
+    container: String,
 
     #[arg(short, long)]
     pickable: String,
@@ -32,13 +35,25 @@ struct Cli {
     output: String,
 }
 
-fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper, PickPlanOptions) {
+fn load_from_args(
+    args: &Cli,
+) -> (
+    Vec<CuboidWithTf>,
+    Vec<bool>,
+    Container,
+    Gripper,
+    PickPlanOptions,
+) {
     let json_file = std::fs::File::open(&args.boxes).expect("Failed to open JSON file");
     let cubes: Vec<CuboidWithTf> =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
 
     let json_file = std::fs::File::open(&args.pickable).expect("Failed to open JSON file");
     let pickable_mask: Vec<bool> =
+        serde_json::from_reader(json_file).expect("Failed to read JSON file");
+
+    let json_file = std::fs::File::open(&args.container).expect("Failed to open JSON file");
+    let container: Container =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
 
     let json_file = std::fs::File::open(&args.gripper).expect("Failed to open JSON file");
@@ -53,7 +68,7 @@ fn load_from_args(args: &Cli) -> (Vec<CuboidWithTf>, Vec<bool>, Gripper, PickPla
 
     let gripper = gripper_serde.to_gripper();
 
-    (cubes, pickable_mask, gripper, options)
+    (cubes, pickable_mask, container, gripper, options)
 }
 
 fn simple_pick<F>(
@@ -76,7 +91,6 @@ where
         let hsize = cube.cuboid.half_extents;
         let volume = 8.0 * hsize[0] * hsize[1] * hsize[2];
         let weight = volume * DENSITY_LIGHT_BOX;
-        println!("Weight: {}", weight);
         if weight > options.max_payload.unwrap() {
             continue;
         }
@@ -167,9 +181,15 @@ where
 fn collision_check(
     pick_plans: &Vec<PickPlan>,
     cubes: &Vec<CuboidWithTf>,
+    container: &Container,
     gripper: &Gripper,
     options: &PickPlanOptions,
 ) -> Vec<bool> {
+    let mut cubes = cubes.clone();
+    // add container parts as additional collision parts
+    for part in container.collision_parts().into_iter() {
+        cubes.push(part);
+    }
     let mut leaves: Vec<(usize, AABB<f64>)> = vec![];
     for (i, c) in cubes.iter().enumerate() {
         let aabb: AABB<f64> = c.cuboid.bounding_volume(&c.tf);
@@ -206,7 +226,7 @@ fn collision_check(
 fn main() {
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
-    let (cubes, pickable_mask, gripper, options) = load_from_args(&args);
+    let (cubes, pickable_mask, container, gripper, options) = load_from_args(&args);
     println!("Options: {:?}", options);
 
     let time2 = std::time::Instant::now();
@@ -249,7 +269,7 @@ fn main() {
         .into_iter()
         .chain(side_pick_plans.into_iter())
         .collect();
-    let collision_mask = collision_check(&pick_plans, &cubes, &gripper, &options);
+    let collision_mask = collision_check(&pick_plans, &cubes, &container, &gripper, &options);
     let pick_plans: Vec<PickPlan> = pick_plans
         .into_iter()
         .zip(collision_mask.into_iter())
