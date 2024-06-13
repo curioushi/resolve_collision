@@ -126,6 +126,7 @@ pub struct PickPlan {
 pub struct PickPlanOptions {
     pub max_payload: Option<f64>,
     pub dsafe: Option<f64>,
+    pub voxel_size: Option<f64>
 }
 
 impl Default for PickPlanOptions {
@@ -133,6 +134,7 @@ impl Default for PickPlanOptions {
         Self {
             max_payload: Some(35.0),
             dsafe: Some(0.0),
+            voxel_size: Some(0.4)
         }
     }
 }
@@ -144,6 +146,9 @@ impl PickPlanOptions {
         }
         if other.dsafe.is_some() {
             self.dsafe = other.dsafe;
+        }
+        if other.voxel_size.is_some() {
+            self.voxel_size = other.voxel_size;
         }
     }
 }

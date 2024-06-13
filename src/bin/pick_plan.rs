@@ -1,7 +1,7 @@
 use clap::Parser;
 use geo::Coord;
 use geo_types::{coord, Rect};
-use ncollide3d::bounding_volume::{BoundingSphere, HasBoundingVolume, AABB};
+use ncollide3d::bounding_volume::{BoundingVolume, HasBoundingVolume, AABB};
 use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::BoundingVolumeInterferencesCollector;
@@ -10,6 +10,7 @@ use ndarray::Array;
 use resolve_collision::common::{Container, CuboidWithTf, Isometry3Serde};
 use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions};
 use resolve_collision::pcd_io::read_pcd;
+use std::collections::HashMap;
 
 const DENSITY_WATER: f64 = 997.0;
 const DENSITY_WATER_BOX: f64 = DENSITY_WATER * std::f64::consts::PI / 4.0;
@@ -189,6 +190,40 @@ where
     pick_plans
 }
 
+struct VoxelMap {
+    map: HashMap<(i32, i32, i32), Vec<usize>>,
+    voxel_size: f64,
+}
+
+impl VoxelMap {
+    fn new(points: &Vec<na::Point3<f64>>, voxel_size: f64) -> Self {
+        let mut map = HashMap::new();
+        for (i, p) in points.iter().enumerate() {
+            let key = (
+                (p.x / voxel_size).floor() as i32,
+                (p.y / voxel_size).floor() as i32,
+                (p.z / voxel_size).floor() as i32,
+            );
+            map.entry(key).or_insert(vec![]).push(i);
+        }
+        Self { map, voxel_size }
+    }
+
+    fn aabb(&self, key: &(i32, i32, i32)) -> AABB<f64> {
+        let mins = na::Point3::new(
+            key.0 as f64 * self.voxel_size,
+            key.1 as f64 * self.voxel_size,
+            key.2 as f64 * self.voxel_size,
+        );
+        let maxs = na::Point3::new(
+            (key.0 + 1) as f64 * self.voxel_size,
+            (key.1 + 1) as f64 * self.voxel_size,
+            (key.2 + 1) as f64 * self.voxel_size,
+        );
+        AABB::new(mins, maxs)
+    }
+}
+
 fn collision_check(
     pick_plans: &Vec<PickPlan>,
     cubes: &Vec<CuboidWithTf>,
@@ -198,6 +233,7 @@ fn collision_check(
     options: &PickPlanOptions,
 ) -> Vec<bool> {
     let dsafe = options.dsafe.unwrap() + 1e-4;
+    let voxel_size = options.voxel_size.unwrap();
     let mut cubes = cubes.clone();
     // add container parts as additional collision parts
     for part in container.collision_parts().into_iter() {
@@ -234,29 +270,42 @@ fn collision_check(
         }
     }
 
-    // TODO: too slow
     if let Some(cloud) = cloud {
         let start_time = std::time::Instant::now();
+        let voxel_map = VoxelMap::new(cloud, voxel_size);
         for (i, pick_plan) in pick_plans.iter().enumerate() {
             if collision_mask[i] {
                 continue;
             }
-            let sphere_approx: BoundingSphere<f64> = gripper
+            let bv: AABB<f64> = gripper
                 .collision_shape
                 .bounding_volume(pick_plan.tf_world_flange.as_ref());
-            for pt in cloud.iter() {
-                let distance_approx =
-                    sphere_approx.distance_to_point(&na::Isometry3::identity(), pt, true);
-                if distance_approx <= dsafe {
-                    let distance = gripper.collision_shape.distance_to_point(
-                        pick_plan.tf_world_flange.as_ref(),
-                        pt,
-                        true,
-                    );
-                    if distance <= dsafe {
-                        collision_mask[i] = true;
-                        break;
+            for (k, v) in voxel_map.map.iter() {
+                let mut voxel_bv = voxel_map.aabb(k);
+                voxel_bv.loosen(dsafe);
+                if voxel_bv.intersects(&bv) {
+                    for pi in v.iter() {
+                        // point-aabb distance
+                        let pt = cloud[*pi];
+                        let mins_pt = bv.mins - pt;
+                        let pt_maxs = pt - bv.maxs;
+                        let shift = mins_pt.sup(&pt_maxs).sup(&na::zero());
+                        let distance_approx = shift.norm();
+                        if distance_approx <= dsafe {
+                            let distance = gripper.collision_shape.distance_to_point(
+                                pick_plan.tf_world_flange.as_ref(),
+                                &pt,
+                                true,
+                            );
+                            if distance <= dsafe {
+                                collision_mask[i] = true;
+                                break;
+                            }
+                        }
                     }
+                }
+                if collision_mask[i] {
+                    break;
                 }
             }
         }
