@@ -1,5 +1,5 @@
 use clap::Parser;
-use geo::Coord;
+use geo::{Area, Coord};
 use geo_types::{coord, Rect};
 use ncollide3d::bounding_volume::{BoundingVolume, HasBoundingVolume, AABB};
 use ncollide3d::na;
@@ -87,6 +87,9 @@ fn simple_pick<F>(
     cubes: &Vec<CuboidWithTf>,
     pickable_mask: &Vec<bool>,
     gripper: &Gripper,
+    collision_cubes: &Vec<CuboidWithTf>,
+    bvt: &BVT<usize, AABB<f64>>,
+    voxel_map: &Option<VoxelMap>,
     options: &PickPlanOptions,
     initial_guess: F,
 ) -> Vec<PickPlan>
@@ -96,6 +99,7 @@ where
     let linear_choice = options.linear_choice.unwrap();
     let mut pick_plans = vec![];
     let suction_areas = gripper.suction_areas();
+    let total_suction_area: f64 = suction_areas.iter().sum();
     let suction_rect = gripper.suction_rect();
     for (i, (cube, pickable)) in cubes.iter().zip(pickable_mask.iter()).enumerate() {
         if !pickable {
@@ -108,7 +112,8 @@ where
             continue;
         }
         let (face_points, base_tip_tf) = initial_guess(cube);
-        // assert gripper towards Z axis
+
+        let mut pick_plans_of_face = vec![];
         for rot_z in vec![
             0.0,
             std::f64::consts::FRAC_PI_2,
@@ -138,6 +143,7 @@ where
                 max_y = max_y.max(p.y);
             }
             let face_rect = Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y});
+            let face_area = face_rect.unsigned_area();
             // TODO: more accurate scope
             let dx1 = face_rect.min().x - suction_rect.max().x;
             let dx2 = face_rect.max().x - suction_rect.min().x;
@@ -157,6 +163,8 @@ where
                         na::Translation3::new(*dx, *dy, 0.0),
                         na::UnitQuaternion::identity(),
                     );
+
+                    // turn off suction groups if intersection area is too small
                     let inter_areas = gripper.intersection_areas(&face_rect.to_polygon(), *dx, *dy);
                     let inter_percents: Vec<f64> = inter_areas
                         .iter()
@@ -164,17 +172,26 @@ where
                         .map(|(a, b)| a / b)
                         .collect();
                     let suction_group_mask: Vec<bool> =
-                        inter_percents.iter().map(|x| x > &0.5).collect();
+                        inter_percents.iter().map(|x| x > &0.1).collect();
                     if !suction_group_mask.iter().any(|x| *x) {
-                        continue
+                        continue;
                     }
+
+                    // compute score
+                    let inter_areas = inter_areas
+                        .iter()
+                        .zip(suction_group_mask.iter())
+                        .map(|(a, b)| if *b { *a } else { 0.0 })
+                        .collect::<Vec<f64>>();
+                    let total_inter_area: f64 = inter_areas.iter().sum();
+                    let score = total_inter_area / total_suction_area.min(face_area);
 
                     // TODO: consider statics (force)
                     // TODO: consider error suction
                     // TODO: check weight if other_box_indices is not empty
                     // TODO: merge boxes
-                    pick_plans.push(PickPlan {
-                        score: 1.0,
+                    pick_plans_of_face.push(PickPlan {
+                        score,
                         tf_world_tip: Isometry3Serde::new(tf_world_tip * tf_offset),
                         tf_world_flange: Isometry3Serde::new(
                             tf_world_tip * tf_offset * gripper.tf_flange_tip.inverse(),
@@ -185,9 +202,17 @@ where
                     });
                 }
             }
-
-            // TODO: sort and filter
         }
+        pick_plans_of_face.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        pick_plans_of_face = filter_by_collision(
+            pick_plans_of_face,
+            collision_cubes,
+            bvt,
+            voxel_map,
+            gripper,
+            options,
+        );
+        pick_plans.extend(pick_plans_of_face);
     }
     pick_plans
 }
@@ -195,10 +220,11 @@ where
 struct VoxelMap {
     map: HashMap<(i32, i32, i32), Vec<usize>>,
     voxel_size: f64,
+    points: Vec<na::Point3<f64>>,
 }
 
 impl VoxelMap {
-    fn new(points: &Vec<na::Point3<f64>>, voxel_size: f64) -> Self {
+    fn new(points: Vec<na::Point3<f64>>, voxel_size: f64) -> Self {
         let mut map = HashMap::new();
         for (i, p) in points.iter().enumerate() {
             let key = (
@@ -208,7 +234,11 @@ impl VoxelMap {
             );
             map.entry(key).or_insert(vec![]).push(i);
         }
-        Self { map, voxel_size }
+        Self {
+            map,
+            voxel_size,
+            points,
+        }
     }
 
     fn aabb(&self, key: &(i32, i32, i32)) -> AABB<f64> {
@@ -226,32 +256,28 @@ impl VoxelMap {
     }
 }
 
-fn collision_check(
-    pick_plans: &Vec<PickPlan>,
+fn filter_by_collision(
+    pick_plans: Vec<PickPlan>,
     cubes: &Vec<CuboidWithTf>,
-    container: &Container,
-    cloud: &Option<Vec<na::Point3<f64>>>,
+    bvt: &BVT<usize, AABB<f64>>,
+    voxel_map: &Option<VoxelMap>,
     gripper: &Gripper,
     options: &PickPlanOptions,
-) -> Vec<bool> {
+) -> Vec<PickPlan> {
     let dsafe = options.dsafe.unwrap() + 1e-4;
-    let voxel_size = options.voxel_size.unwrap();
-    let mut cubes = cubes.clone();
-    // add container parts as additional collision parts
-    for part in container.collision_parts().into_iter() {
-        cubes.push(part);
-    }
-    let mut leaves: Vec<(usize, AABB<f64>)> = vec![];
-    for (i, c) in cubes.iter().enumerate() {
-        let aabb: AABB<f64> = c.cuboid.bounding_volume(&c.tf);
-        leaves.push((i, aabb));
-    }
-    let bvt = BVT::new_balanced(leaves.clone());
-    let mut collision_mask = vec![false; pick_plans.len()];
-    for (i, pick_plan) in pick_plans.iter().enumerate() {
+    let max_plans_per_face = options.max_plans_per_face.unwrap();
+
+    let mut collision_free_plans: Vec<PickPlan> = vec![];
+    for pick_plan in pick_plans.into_iter() {
+        if collision_free_plans.len() >= max_plans_per_face {
+            break;
+        }
+        let mut collision = false;
         let bv: AABB<f64> = gripper
             .collision_shape
             .bounding_volume(&pick_plan.tf_world_flange);
+
+        // check gripper-box collision
         let mut inters: Vec<usize> = vec![];
         let mut visitor = BoundingVolumeInterferencesCollector::new(&bv, &mut inters);
         bvt.visit(&mut visitor);
@@ -266,29 +292,23 @@ fn collision_check(
                 cubes[*j].cuboid.as_ref(),
             );
             if distance <= dsafe {
-                collision_mask[i] = true;
+                collision = true;
                 break;
             }
         }
-    }
+        if collision {
+            continue;
+        }
 
-    if let Some(cloud) = cloud {
-        let start_time = std::time::Instant::now();
-        let voxel_map = VoxelMap::new(cloud, voxel_size);
-        for (i, pick_plan) in pick_plans.iter().enumerate() {
-            if collision_mask[i] {
-                continue;
-            }
-            let bv: AABB<f64> = gripper
-                .collision_shape
-                .bounding_volume(pick_plan.tf_world_flange.as_ref());
+        // check gripper-cloud collision
+        if let Some(voxel_map) = voxel_map {
             for (k, v) in voxel_map.map.iter() {
                 let mut voxel_bv = voxel_map.aabb(k);
                 voxel_bv.loosen(dsafe.max(0.0));
                 if voxel_bv.intersects(&bv) {
                     for pi in v.iter() {
                         // point-aabb distance
-                        let pt = cloud[*pi];
+                        let pt = voxel_map.points[*pi];
                         let mins_pt = bv.mins - pt;
                         let pt_maxs = pt - bv.maxs;
                         let shift = mins_pt.sup(&pt_maxs).sup(&na::zero());
@@ -300,21 +320,23 @@ fn collision_check(
                                 true,
                             );
                             if distance <= dsafe {
-                                collision_mask[i] = true;
+                                collision = true;
                                 break;
                             }
                         }
                     }
-                }
-                if collision_mask[i] {
-                    break;
+                    if collision {
+                        break;
+                    }
                 }
             }
         }
-        let end_time = std::time::Instant::now();
-        println!("Cloud collision check time: {:?}", end_time - start_time);
+
+        if !collision {
+            collision_free_plans.push(pick_plan);
+        }
     }
-    collision_mask
+    collision_free_plans
 }
 
 fn main() {
@@ -323,58 +345,89 @@ fn main() {
     let args = Cli::parse();
     let (cubes, pickable_mask, container, pcd, gripper, options) = load_from_args(&args);
     println!("Options: {:?}", options);
-    if pcd.is_some() {
-        println!("Use cloud data");
-    } else {
-        println!("No cloud data");
-    }
 
     let time2 = std::time::Instant::now();
-    let top_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, &options, |c| {
-        let hsize = c.cuboid.half_extents;
-        let face_points = vec![
-            c.tf.transform_point(&na::Point3::new(hsize[0], hsize[1], hsize[2])),
-            c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
-            c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], hsize[2])),
-            c.tf.transform_point(&na::Point3::new(hsize[0], -hsize[1], hsize[2])),
-        ];
-        let position = c.tf.transform_point(&na::Point3::new(0.0, 0.0, hsize[2]));
-        let base_tip_tf = na::Isometry3::from_parts(
-            na::Translation3::new(position.x, position.y, position.z),
-            c.tf.rotation
-                * na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f64::consts::PI),
-        );
-        (face_points, base_tip_tf)
-    });
-    let side_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, &options, |c| {
-        let hsize = c.cuboid.half_extents;
-        let face_points = vec![
-            c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
-            c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], hsize[2])),
-            c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], -hsize[2])),
-            c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], -hsize[2])),
-        ];
-        let position = c.tf.transform_point(&na::Point3::new(-hsize[0], 0.0, 0.0));
-        let base_tip_tf = na::Isometry3::from_parts(
-            na::Translation3::new(position.x, position.y, position.z),
-            c.tf.rotation
-                * na::Rotation3::from_axis_angle(
-                    &na::Vector3::y_axis(),
-                    std::f64::consts::FRAC_PI_2,
-                ),
-        );
-        (face_points, base_tip_tf)
-    });
+    // prepare collision check data structure
+    let voxel_map = match pcd {
+        Some(pcd) => {
+            println!("Use cloud data");
+            Some(VoxelMap::new(pcd, options.voxel_size.unwrap()))
+        }
+        None => {
+            println!("No cloud data");
+            None
+        }
+    };
+    let mut collision_cubes = cubes.clone();
+    for part in container.collision_parts().into_iter() {
+        collision_cubes.push(part);
+    }
+    let mut leaves: Vec<(usize, AABB<f64>)> = vec![];
+    for (i, c) in collision_cubes.iter().enumerate() {
+        let aabb: AABB<f64> = c.cuboid.bounding_volume(&c.tf);
+        leaves.push((i, aabb));
+    }
+    let bvt = BVT::new_balanced(leaves.clone());
+
+    // top pick
+    let top_pick_plans = simple_pick(
+        &cubes,
+        &pickable_mask,
+        &gripper,
+        &collision_cubes,
+        &bvt,
+        &voxel_map,
+        &options,
+        |c| {
+            let hsize = c.cuboid.half_extents;
+            let face_points = vec![
+                c.tf.transform_point(&na::Point3::new(hsize[0], hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(hsize[0], -hsize[1], hsize[2])),
+            ];
+            let position = c.tf.transform_point(&na::Point3::new(0.0, 0.0, hsize[2]));
+            let base_tip_tf = na::Isometry3::from_parts(
+                na::Translation3::new(position.x, position.y, position.z),
+                c.tf.rotation
+                    * na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f64::consts::PI),
+            );
+            (face_points, base_tip_tf)
+        },
+    );
+
+    // side pick
+    let side_pick_plans = simple_pick(
+        &cubes,
+        &pickable_mask,
+        &gripper,
+        &collision_cubes,
+        &bvt,
+        &voxel_map,
+        &options,
+        |c| {
+            let hsize = c.cuboid.half_extents;
+            let face_points = vec![
+                c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], -hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], -hsize[2])),
+            ];
+            let position = c.tf.transform_point(&na::Point3::new(-hsize[0], 0.0, 0.0));
+            let base_tip_tf = na::Isometry3::from_parts(
+                na::Translation3::new(position.x, position.y, position.z),
+                c.tf.rotation
+                    * na::Rotation3::from_axis_angle(
+                        &na::Vector3::y_axis(),
+                        std::f64::consts::FRAC_PI_2,
+                    ),
+            );
+            (face_points, base_tip_tf)
+        },
+    );
     let pick_plans: Vec<PickPlan> = top_pick_plans
         .into_iter()
         .chain(side_pick_plans.into_iter())
-        .collect();
-    let collision_mask = collision_check(&pick_plans, &cubes, &container, &pcd, &gripper, &options);
-    let pick_plans: Vec<PickPlan> = pick_plans
-        .into_iter()
-        .zip(collision_mask.into_iter())
-        .filter(|(_, b)| !b)
-        .map(|(p, _)| p)
         .collect();
     let time3 = std::time::Instant::now();
 

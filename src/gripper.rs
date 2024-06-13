@@ -128,6 +128,7 @@ pub struct PickPlanOptions {
     pub dsafe: Option<f64>,
     pub voxel_size: Option<f64>,
     pub linear_choice: Option<usize>,
+    pub max_plans_per_face: Option<usize>,
 }
 
 impl Default for PickPlanOptions {
@@ -136,7 +137,8 @@ impl Default for PickPlanOptions {
             max_payload: Some(35.0),
             dsafe: Some(0.0),
             voxel_size: Some(0.4),
-            linear_choice: Some(3)
+            linear_choice: Some(5),
+            max_plans_per_face: Some(10000),
         }
     }
 }
@@ -154,6 +156,9 @@ impl PickPlanOptions {
         }
         if other.linear_choice.is_some() {
             self.linear_choice = other.linear_choice;
+        }
+        if other.max_plans_per_face.is_some() {
+            self.max_plans_per_face = other.max_plans_per_face;
         }
     }
 }
