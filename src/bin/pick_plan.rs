@@ -93,6 +93,7 @@ fn simple_pick<F>(
 where
     F: Fn(&CuboidWithTf) -> (Vec<na::Point3<f64>>, na::Isometry3<f64>),
 {
+    let linear_choice = options.linear_choice.unwrap();
     let mut pick_plans = vec![];
     let suction_areas = gripper.suction_areas();
     let suction_rect = gripper.suction_rect();
@@ -137,28 +138,21 @@ where
                 max_y = max_y.max(p.y);
             }
             let face_rect = Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y});
-            let dx1 = face_rect.min().x - suction_rect.min().x;
-            let dx2 = face_rect.max().x - suction_rect.max().x;
+            // TODO: more accurate scope
+            let dx1 = face_rect.min().x - suction_rect.max().x;
+            let dx2 = face_rect.max().x - suction_rect.min().x;
             let (dx1, dx2) = match dx1 < dx2 {
                 true => (dx1, dx2),
                 false => (dx2, dx1),
             };
-            let dx_list = match suction_rect.width() > face_rect.width() {
-                true => Array::linspace(dx1, dx2, 3),
-                false => Array::from_vec(vec![(dx1 + dx2) / 2.0]),
-            };
-            let dy1 = face_rect.min().y - suction_rect.min().y;
-            let dy2 = face_rect.max().y - suction_rect.max().y;
+            let dy1 = face_rect.min().y - suction_rect.max().y;
+            let dy2 = face_rect.max().y - suction_rect.min().y;
             let (dy1, dy2) = match dy1 < dy2 {
                 true => (dy1, dy2),
                 false => (dy2, dy1),
             };
-            let dy_list = match suction_rect.height() > face_rect.height() {
-                true => Array::linspace(dy1, dy2, 3),
-                false => Array::from_vec(vec![(dy1 + dy2) / 2.0]),
-            };
-            for dx in dx_list.iter() {
-                for dy in dy_list.iter() {
+            for dx in Array::linspace(dx1, dx2, linear_choice).iter() {
+                for dy in Array::linspace(dy1, dy2, linear_choice).iter() {
                     let tf_offset = na::Isometry3::from_parts(
                         na::Translation3::new(*dx, *dy, 0.0),
                         na::UnitQuaternion::identity(),
@@ -171,8 +165,14 @@ where
                         .collect();
                     let suction_group_mask: Vec<bool> =
                         inter_percents.iter().map(|x| x > &0.5).collect();
+                    if !suction_group_mask.iter().any(|x| *x) {
+                        continue
+                    }
 
+                    // TODO: consider statics (force)
+                    // TODO: consider error suction
                     // TODO: check weight if other_box_indices is not empty
+                    // TODO: merge boxes
                     pick_plans.push(PickPlan {
                         score: 1.0,
                         tf_world_tip: Isometry3Serde::new(tf_world_tip * tf_offset),
@@ -185,6 +185,8 @@ where
                     });
                 }
             }
+
+            // TODO: sort and filter
         }
     }
     pick_plans
@@ -282,7 +284,7 @@ fn collision_check(
                 .bounding_volume(pick_plan.tf_world_flange.as_ref());
             for (k, v) in voxel_map.map.iter() {
                 let mut voxel_bv = voxel_map.aabb(k);
-                voxel_bv.loosen(dsafe);
+                voxel_bv.loosen(dsafe.max(0.0));
                 if voxel_bv.intersects(&bv) {
                     for pi in v.iter() {
                         // point-aabb distance
