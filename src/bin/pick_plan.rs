@@ -96,7 +96,7 @@ fn simple_pick<F>(
 where
     F: Fn(&CuboidWithTf) -> (Vec<na::Point3<f64>>, na::Isometry3<f64>),
 {
-    let linear_choice = options.linear_choice.unwrap();
+    let linear_choice = options.linear_choice.unwrap().max(1);
     let mut pick_plans = vec![];
     let suction_areas = gripper.suction_areas();
     let total_suction_area: f64 = suction_areas.iter().sum();
@@ -145,27 +145,21 @@ where
             let face_rect = Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y});
             let face_area = face_rect.unsigned_area();
             // TODO: more accurate scope
-            let dx1 = face_rect.min().x - suction_rect.max().x;
-            let dx2 = face_rect.max().x - suction_rect.min().x;
-            let (dx1, dx2) = match dx1 < dx2 {
-                true => (dx1, dx2),
-                false => (dx2, dx1),
-            };
-            let dy1 = face_rect.min().y - suction_rect.max().y;
-            let dy2 = face_rect.max().y - suction_rect.min().y;
-            let (dy1, dy2) = match dy1 < dy2 {
-                true => (dy1, dy2),
-                false => (dy2, dy1),
-            };
-            for dx in Array::linspace(dx1, dx2, linear_choice).iter() {
-                for dy in Array::linspace(dy1, dy2, linear_choice).iter() {
+            let x1 = face_rect.min().x - suction_rect.max().x;
+            let x2 = face_rect.max().x - suction_rect.min().x;
+            let step_x = (x2 - x1) / (linear_choice + 1) as f64;
+            let y1 = face_rect.min().y - suction_rect.max().y;
+            let y2 = face_rect.max().y - suction_rect.min().y;
+            let step_y = (y2 - y1) / (linear_choice + 1) as f64;
+            for dx in Array::linspace(x1 + step_x, x2 - step_x, linear_choice).iter() {
+                for dy in Array::linspace(y1 + step_y, y2 - step_y, linear_choice).iter() {
                     let tf_offset = na::Isometry3::from_parts(
                         na::Translation3::new(*dx, *dy, 0.0),
                         na::UnitQuaternion::identity(),
                     );
 
                     // turn off suction groups if intersection area is too small
-                    let inter_areas = gripper.intersection_areas(&face_rect.to_polygon(), *dx, *dy);
+                    let inter_areas = gripper.intersection_areas(&face_rect, *dx, *dy);
                     let inter_percents: Vec<f64> = inter_areas
                         .iter()
                         .zip(suction_areas.iter())
@@ -344,6 +338,7 @@ fn main() {
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
     let (cubes, pickable_mask, container, pcd, gripper, options) = load_from_args(&args);
+    // TODO: filter out unreachable boxes first
     println!("Options: {:?}", options);
 
     let time2 = std::time::Instant::now();
@@ -368,6 +363,7 @@ fn main() {
         leaves.push((i, aabb));
     }
     let bvt = BVT::new_balanced(leaves.clone());
+    let time3 = std::time::Instant::now();
 
     // top pick
     let top_pick_plans = simple_pick(
@@ -395,6 +391,7 @@ fn main() {
             (face_points, base_tip_tf)
         },
     );
+    let time4 = std::time::Instant::now();
 
     // side pick
     let side_pick_plans = simple_pick(
@@ -425,16 +422,20 @@ fn main() {
             (face_points, base_tip_tf)
         },
     );
+    let time5 = std::time::Instant::now();
     let pick_plans: Vec<PickPlan> = top_pick_plans
         .into_iter()
         .chain(side_pick_plans.into_iter())
         .collect();
-    let time3 = std::time::Instant::now();
+    let time6 = std::time::Instant::now();
 
     let output_file = std::fs::File::create(&args.output).expect("Failed to create JSON file");
     serde_json::to_writer(output_file, &pick_plans).expect("Failed to write JSON file");
-    let time4 = std::time::Instant::now();
+    let time7 = std::time::Instant::now();
     println!("CLI + Load Json time: {:?}", time2 - time1);
-    println!("Pick Plan time: {:?}", time3 - time2);
-    println!("Deserialize + Write time: {:?}", time4 - time3);
+    println!("Prepare Collision time: {:?}", time3 - time2);
+    println!("Top Pick time: {:?}", time4 - time3);
+    println!("Side Pick time: {:?}", time5 - time4);
+    println!("Concat time: {:?}", time6 - time5);
+    println!("Deserialize + Write time: {:?}", time7 - time6);
 }

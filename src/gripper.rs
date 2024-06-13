@@ -1,6 +1,6 @@
 use crate::common::{isometry_to_vec, vec_to_isometry, CuboidSerde, CuboidWithTf, Isometry3Serde};
-use geo::algorithm::{Area, BooleanOps, Translate};
-use geo_types::{coord, LineString, Polygon, Rect};
+use geo::algorithm::{Area, Translate};
+use geo_types::{coord, Rect};
 use ncollide3d::na;
 use ncollide3d::shape::{Compound, Cuboid, ShapeHandle};
 use serde::{Deserialize, Serialize};
@@ -22,9 +22,8 @@ impl GripperSerde {
         let mut suction_groups = vec![];
         for sg in gripper.suction_groups.iter() {
             let mut shape = vec![];
-            for p in sg.shape.exterior() {
-                shape.push((p.x, p.y));
-            }
+            shape.push((sg.shape.min().x, sg.shape.min().y));
+            shape.push((sg.shape.max().x, sg.shape.max().y));
             suction_groups.push(SuctionGroupSerde { shape });
         }
         let mut collision_shape = vec![];
@@ -49,7 +48,7 @@ impl GripperSerde {
             for p in sg.shape.iter() {
                 points.push(coord! {x: p.0, y: p.1});
             }
-            let shape = Polygon::new(LineString::new(points), vec![]);
+            let shape = Rect::new(points[0], points[1]);
             suction_groups.push(SuctionGroup { shape });
         }
         let mut shapes = vec![];
@@ -68,13 +67,24 @@ impl GripperSerde {
 
 #[derive(Debug)]
 pub struct SuctionGroup {
-    pub shape: Polygon,
+    pub shape: Rect,
 }
 
 pub struct Gripper {
     pub tf_flange_tip: na::Isometry3<f64>,
     pub suction_groups: Vec<SuctionGroup>,
     pub collision_shape: Compound<f64>,
+}
+
+fn rect_rect_area(rect1: &Rect, rect2: &Rect) -> f64 {
+    let min1 = na::Vector2::new(rect1.min().x, rect1.min().y);
+    let min2 = na::Vector2::new(rect2.min().x, rect2.min().y);
+    let max1 = na::Vector2::new(rect1.max().x, rect1.max().y);
+    let max2 = na::Vector2::new(rect2.max().x, rect2.max().y);
+    let min = min1.sup(&min2);
+    let max = max1.inf(&max2);
+    let diff = (max - min).sup(&na::zero());
+    diff.x * diff.y
 }
 
 impl Gripper {
@@ -92,21 +102,21 @@ impl Gripper {
         let mut max_x = f64::MIN;
         let mut max_y = f64::MIN;
         for sg in self.suction_groups.iter() {
-            for p in sg.shape.exterior() {
-                min_x = min_x.min(p.x);
-                min_y = min_y.min(p.y);
-                max_x = max_x.max(p.x);
-                max_y = max_y.max(p.y);
-            }
+            let mins = sg.shape.min();
+            let maxs = sg.shape.max();
+            min_x = min_x.min(mins.x);
+            min_y = min_y.min(mins.y);
+            max_x = max_x.max(maxs.x);
+            max_y = max_y.max(maxs.y);
         }
         Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y})
     }
-    pub fn intersection_areas(&self, polygon: &Polygon, dx: f64, dy: f64) -> Vec<f64> {
-        let polygon = polygon.translate(-dx, -dy); // multiply by -1 for gripper translation
+    pub fn intersection_areas(&self, rect: &Rect, dx: f64, dy: f64) -> Vec<f64> {
+        let rect = rect.translate(-dx, -dy); // multiply by -1 for gripper translation
         let areas: Vec<f64> = self
             .suction_groups
             .iter()
-            .map(|sg| sg.shape.intersection(&polygon).unsigned_area())
+            .map(|sg| rect_rect_area(&sg.shape, &rect))
             .collect();
         areas
     }
@@ -137,7 +147,7 @@ impl Default for PickPlanOptions {
             max_payload: Some(35.0),
             dsafe: Some(0.0),
             voxel_size: Some(0.4),
-            linear_choice: Some(5),
+            linear_choice: Some(21),
             max_plans_per_face: Some(10000),
         }
     }
