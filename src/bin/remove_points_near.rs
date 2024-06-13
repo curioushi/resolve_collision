@@ -131,6 +131,7 @@ fn remove_points_near(
 }
 
 fn main() {
+    println!("=========================== Remove Points Near ===========================");
     let args = Cli::parse();
     let (cubes, scene_mesh, pc) = load_from_directory(&args.input_dir);
     let (points_to_keep, points_to_remove) =

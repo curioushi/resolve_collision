@@ -68,6 +68,7 @@ fn align_axis(cube: &mut CuboidWithTf) {
 }
 
 fn main() {
+    println!("=========================== Align Axis ===========================");
     let start_time = std::time::Instant::now();
     let args = Cli::parse();
 

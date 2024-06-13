@@ -68,6 +68,7 @@ struct Cli {
 }
 
 fn main() {
+    println!("=========================== Resolve Collision ===========================");
     let args = Cli::parse();
     match (args.min_bound.clone(), args.max_bound.clone()) {
         (Some(min_bound), Some(max_bound)) => {

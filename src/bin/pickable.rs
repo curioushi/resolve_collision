@@ -59,6 +59,7 @@ fn pickable(cubes: &Vec<CuboidWithTf>) -> Vec<bool> {
 }
 
 fn main() {
+    println!("=========================== Pickable ===========================");
     let start_time = std::time::Instant::now();
     let args = Cli::parse();
 

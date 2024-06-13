@@ -277,6 +277,7 @@ fn compute_visibility(cube: &CuboidWithTf, cube_points: &Vec<na::Point3<f64>>) -
 }
 
 fn main() {
+    println!("=========================== Simulate Lidar ===========================");
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
     let (cubes, scene_mesh, lidars) = load_from_directory(&args.input_dir);

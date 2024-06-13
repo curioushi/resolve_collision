@@ -1,14 +1,15 @@
 use clap::Parser;
 use geo::Coord;
 use geo_types::{coord, Rect};
-use ncollide3d::bounding_volume::{HasBoundingVolume, AABB};
+use ncollide3d::bounding_volume::{BoundingSphere, HasBoundingVolume, AABB};
 use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
-use ncollide3d::query;
 use ncollide3d::query::visitors::BoundingVolumeInterferencesCollector;
+use ncollide3d::query::{self, PointQuery};
 use ndarray::Array;
 use resolve_collision::common::{Container, CuboidWithTf, Isometry3Serde};
 use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions};
+use resolve_collision::pcd_io::read_pcd;
 
 const DENSITY_WATER: f64 = 997.0;
 const DENSITY_WATER_BOX: f64 = DENSITY_WATER * std::f64::consts::PI / 4.0;
@@ -16,16 +17,19 @@ const DENSITY_LIGHT_BOX: f64 = 0.1 * DENSITY_WATER_BOX;
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(short, long)]
+    #[arg(long)]
     boxes: String,
 
-    #[arg(short, long)]
-    container: String,
-
-    #[arg(short, long)]
+    #[arg(long)]
     pickable: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
+    container: String,
+
+    #[arg(long)]
+    cloud: Option<String>,
+
+    #[arg(long)]
     gripper: String,
 
     #[arg(long)]
@@ -41,6 +45,7 @@ fn load_from_args(
     Vec<CuboidWithTf>,
     Vec<bool>,
     Container,
+    Option<Vec<na::Point3<f64>>>,
     Gripper,
     PickPlanOptions,
 ) {
@@ -56,6 +61,12 @@ fn load_from_args(
     let container: Container =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
 
+    // let json_file = std::fs::File::open(&args.cloud).expect("Failed to open JSON file");
+    let pcd = match &args.cloud {
+        Some(cloud) => Some(read_pcd(&cloud)),
+        None => None,
+    };
+
     let json_file = std::fs::File::open(&args.gripper).expect("Failed to open JSON file");
     let gripper_serde: GripperSerde =
         serde_json::from_reader(json_file).expect("Failed to read JSON file");
@@ -68,7 +79,7 @@ fn load_from_args(
 
     let gripper = gripper_serde.to_gripper();
 
-    (cubes, pickable_mask, container, gripper, options)
+    (cubes, pickable_mask, container, pcd, gripper, options)
 }
 
 fn simple_pick<F>(
@@ -182,9 +193,11 @@ fn collision_check(
     pick_plans: &Vec<PickPlan>,
     cubes: &Vec<CuboidWithTf>,
     container: &Container,
+    cloud: &Option<Vec<na::Point3<f64>>>,
     gripper: &Gripper,
     options: &PickPlanOptions,
 ) -> Vec<bool> {
+    let dsafe = options.dsafe.unwrap() + 1e-4;
     let mut cubes = cubes.clone();
     // add container parts as additional collision parts
     for part in container.collision_parts().into_iter() {
@@ -214,20 +227,56 @@ fn collision_check(
                 cubes[*j].tf.as_ref(),
                 cubes[*j].cuboid.as_ref(),
             );
-            if distance <= options.dsafe.unwrap() {
+            if distance <= dsafe {
                 collision_mask[i] = true;
                 break;
             }
         }
     }
+
+    // TODO: too slow
+    if let Some(cloud) = cloud {
+        let start_time = std::time::Instant::now();
+        for (i, pick_plan) in pick_plans.iter().enumerate() {
+            if collision_mask[i] {
+                continue;
+            }
+            let sphere_approx: BoundingSphere<f64> = gripper
+                .collision_shape
+                .bounding_volume(pick_plan.tf_world_flange.as_ref());
+            for pt in cloud.iter() {
+                let distance_approx =
+                    sphere_approx.distance_to_point(&na::Isometry3::identity(), pt, true);
+                if distance_approx <= dsafe {
+                    let distance = gripper.collision_shape.distance_to_point(
+                        pick_plan.tf_world_flange.as_ref(),
+                        pt,
+                        true,
+                    );
+                    if distance <= dsafe {
+                        collision_mask[i] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        let end_time = std::time::Instant::now();
+        println!("Cloud collision check time: {:?}", end_time - start_time);
+    }
     collision_mask
 }
 
 fn main() {
+    println!("=========================== PickPlan ===========================");
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
-    let (cubes, pickable_mask, container, gripper, options) = load_from_args(&args);
+    let (cubes, pickable_mask, container, pcd, gripper, options) = load_from_args(&args);
     println!("Options: {:?}", options);
+    if pcd.is_some() {
+        println!("Use cloud data");
+    } else {
+        println!("No cloud data");
+    }
 
     let time2 = std::time::Instant::now();
     let top_pick_plans = simple_pick(&cubes, &pickable_mask, &gripper, &options, |c| {
@@ -269,7 +318,7 @@ fn main() {
         .into_iter()
         .chain(side_pick_plans.into_iter())
         .collect();
-    let collision_mask = collision_check(&pick_plans, &cubes, &container, &gripper, &options);
+    let collision_mask = collision_check(&pick_plans, &cubes, &container, &pcd, &gripper, &options);
     let pick_plans: Vec<PickPlan> = pick_plans
         .into_iter()
         .zip(collision_mask.into_iter())
