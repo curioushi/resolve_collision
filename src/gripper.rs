@@ -76,15 +76,16 @@ pub struct Gripper {
     pub collision_shape: Compound<f64>,
 }
 
-fn rect_rect_area(rect1: &Rect, rect2: &Rect) -> f64 {
+fn rect_rect_area_center(rect1: &Rect, rect2: &Rect) -> (f64, f64, f64) {
     let min1 = na::Vector2::new(rect1.min().x, rect1.min().y);
     let min2 = na::Vector2::new(rect2.min().x, rect2.min().y);
     let max1 = na::Vector2::new(rect1.max().x, rect1.max().y);
     let max2 = na::Vector2::new(rect2.max().x, rect2.max().y);
     let min = min1.sup(&min2);
     let max = max1.inf(&max2);
+    let center = (min + max) / 2.0;
     let diff = (max - min).sup(&na::zero());
-    diff.x * diff.y
+    (diff.x * diff.y, center.x, center.y)
 }
 
 impl Gripper {
@@ -111,14 +112,13 @@ impl Gripper {
         }
         Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y})
     }
-    pub fn intersection_areas(&self, rect: &Rect, dx: f64, dy: f64) -> Vec<f64> {
-        let rect = rect.translate(-dx, -dy); // multiply by -1 for gripper translation
-        let areas: Vec<f64> = self
+    pub fn intersection_area_centers(&self, rect: &Rect, dx: f64, dy: f64) -> Vec<(f64, f64, f64)> {
+        let area_centers = self
             .suction_groups
             .iter()
-            .map(|sg| rect_rect_area(&sg.shape, &rect))
+            .map(|sg| rect_rect_area_center(&sg.shape.translate(dx, dy), &rect))
             .collect();
-        areas
+        area_centers
     }
 }
 
@@ -139,6 +139,7 @@ pub struct PickPlanOptions {
     pub voxel_size: Option<f64>,
     pub linear_choice: Option<usize>,
     pub max_plans_per_face: Option<usize>,
+    pub centrality_filter: Option<f64>,
 }
 
 impl Default for PickPlanOptions {
@@ -148,7 +149,8 @@ impl Default for PickPlanOptions {
             dsafe: Some(0.0),
             voxel_size: Some(0.4),
             linear_choice: Some(21),
-            max_plans_per_face: Some(10000),
+            max_plans_per_face: Some(5),
+            centrality_filter: Some(0.7),
         }
     }
 }
@@ -169,6 +171,9 @@ impl PickPlanOptions {
         }
         if other.max_plans_per_face.is_some() {
             self.max_plans_per_face = other.max_plans_per_face;
+        }
+        if other.centrality_filter.is_some() {
+            self.centrality_filter = other.centrality_filter;
         }
     }
 }

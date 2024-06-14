@@ -96,7 +96,9 @@ fn simple_pick<F>(
 where
     F: Fn(&CuboidWithTf) -> (Vec<na::Point3<f64>>, na::Isometry3<f64>),
 {
-    let linear_choice = options.linear_choice.unwrap().max(1);
+    let linear_choice = options.linear_choice.unwrap().clamp(1, 51);
+    let min_centrality = options.centrality_filter.unwrap().clamp(0.0, 1.0);
+
     let mut pick_plans = vec![];
     let suction_areas = gripper.suction_areas();
     let total_suction_area: f64 = suction_areas.iter().sum();
@@ -144,7 +146,6 @@ where
             }
             let face_rect = Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y});
             let face_area = face_rect.unsigned_area();
-            // TODO: more accurate scope
             let x1 = face_rect.min().x - suction_rect.max().x;
             let x2 = face_rect.max().x - suction_rect.min().x;
             let step_x = (x2 - x1) / (linear_choice + 1) as f64;
@@ -159,28 +160,48 @@ where
                     );
 
                     // turn off suction groups if intersection area is too small
-                    let inter_areas = gripper.intersection_areas(&face_rect, *dx, *dy);
+                    let inter_area_centers =
+                        gripper.intersection_area_centers(&face_rect, *dx, *dy);
+                    let mut inter_areas = inter_area_centers
+                        .iter()
+                        .map(|(a, _, _)| *a)
+                        .collect::<Vec<f64>>();
                     let inter_percents: Vec<f64> = inter_areas
                         .iter()
                         .zip(suction_areas.iter())
                         .map(|(a, b)| a / b)
                         .collect();
                     let suction_group_mask: Vec<bool> =
-                        inter_percents.iter().map(|x| x > &0.1).collect();
+                        inter_percents.iter().map(|x| x > &0.1).collect(); // think about this threshold
                     if !suction_group_mask.iter().any(|x| *x) {
                         continue;
                     }
 
                     // compute score
-                    let inter_areas = inter_areas
-                        .iter()
+                    inter_areas
+                        .iter_mut()
                         .zip(suction_group_mask.iter())
-                        .map(|(a, b)| if *b { *a } else { 0.0 })
-                        .collect::<Vec<f64>>();
+                        .for_each(|(a, b)| {
+                            if !*b {
+                                *a = 0.0;
+                            }
+                        });
                     let total_inter_area: f64 = inter_areas.iter().sum();
-                    let score = total_inter_area / total_suction_area.min(face_area);
+                    let iou = total_inter_area / total_suction_area.min(face_area);
+                    let force_center = inter_areas
+                        .iter()
+                        .zip(inter_area_centers.iter())
+                        .map(|(a, (_, x, y))| *a * na::Vector2::new(*x, *y))
+                        .sum::<na::Vector2<f64>>()
+                        / total_inter_area;
+                    let centrality = 1.0
+                        - (force_center.norm() / (face_rect.width().max(face_rect.height()) / 2.0))
+                            .min(1.0);
+                    if centrality < min_centrality {
+                        continue;
+                    }
+                    let score = (iou + centrality) * 0.5;
 
-                    // TODO: consider statics (force)
                     // TODO: consider error suction
                     // TODO: check weight if other_box_indices is not empty
                     // TODO: merge boxes
