@@ -605,6 +605,8 @@ fn main() {
     println!("Top Pick time: {:?}", time4 - time3);
     println!("Side Pick time: {:?}", time5 - time4);
     println!("Side Pick with Support time: {:?}", time6 - time5);
-    println!("Computation time: {:?}", time7 - time2);
+    println!("Total time: {:?}", time7 - time2);
+    let num_pickable = pickable_mask.iter().filter(|x| **x).count();
+    println!("Per Pickable time: {:?}", (time7 - time2) / num_pickable as u32);
     println!("Deserialize + Write time: {:?}", time8 - time7);
 }
