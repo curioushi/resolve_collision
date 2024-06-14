@@ -279,8 +279,11 @@ fn filter_by_collision(
     gripper: &Gripper,
     options: &PickPlanOptions,
 ) -> Vec<PickPlan> {
-    let dsafe = options.dsafe.unwrap() + 1e-4;
     let max_plans_per_face = options.max_plans_per_face.unwrap();
+    if options.dsafe.unwrap() < 0.0 {
+        return pick_plans.into_iter().take(max_plans_per_face).collect();
+    }
+    let dsafe = 1e-4; // we have loosen the collision shape before, so we can use a small value here
 
     let mut collision_free_plans: Vec<PickPlan> = vec![];
     for pick_plan in pick_plans.into_iter() {
@@ -318,8 +321,7 @@ fn filter_by_collision(
         // check gripper-cloud collision
         if let Some(voxel_map) = voxel_map {
             for (k, v) in voxel_map.map.iter() {
-                let mut voxel_bv = voxel_map.aabb(k);
-                voxel_bv.loosen(dsafe.max(0.0));
+                let voxel_bv = voxel_map.aabb(k);
                 if voxel_bv.intersects(&bv) {
                     for pi in v.iter() {
                         // point-aabb distance
@@ -358,12 +360,17 @@ fn main() {
     println!("=========================== PickPlan ===========================");
     let time1 = std::time::Instant::now();
     let args = Cli::parse();
-    let (cubes, pickable_mask, container, pcd, gripper, options) = load_from_args(&args);
+    let (cubes, pickable_mask, container, pcd, mut gripper, options) = load_from_args(&args);
     // TODO: filter out unreachable boxes first
     println!("Options: {:?}", options);
 
     let time2 = std::time::Instant::now();
     // prepare collision check data structure
+
+    // loosen the gripper collision shape at X/Y axis
+    let dsafe = options.dsafe.unwrap();
+    gripper.loosen_collision_shape(dsafe.max(0.0), dsafe.max(0.0), 0.0);
+
     let voxel_map = match pcd {
         Some(pcd) => {
             println!("Use cloud data");
@@ -374,6 +381,7 @@ fn main() {
             None
         }
     };
+
     let mut collision_cubes = cubes.clone();
     for part in container.collision_parts().into_iter() {
         collision_cubes.push(part);

@@ -15,6 +15,7 @@ pub struct GripperSerde {
     pub tf_flange_tip: Vec<Vec<f64>>,
     pub suction_groups: Vec<SuctionGroupSerde>,
     pub collision_shape: Vec<CuboidWithTf>,
+    pub soft_length: f64,
 }
 
 impl GripperSerde {
@@ -38,6 +39,7 @@ impl GripperSerde {
             tf_flange_tip: isometry_to_vec(&gripper.tf_flange_tip),
             suction_groups,
             collision_shape,
+            soft_length: gripper.soft_length,
         }
     }
 
@@ -61,6 +63,7 @@ impl GripperSerde {
             tf_flange_tip: vec_to_isometry(&self.tf_flange_tip),
             suction_groups,
             collision_shape,
+            soft_length: self.soft_length,
         }
     }
 }
@@ -74,6 +77,7 @@ pub struct Gripper {
     pub tf_flange_tip: na::Isometry3<f64>,
     pub suction_groups: Vec<SuctionGroup>,
     pub collision_shape: Compound<f64>,
+    pub soft_length: f64,
 }
 
 fn rect_rect_area_center(rect1: &Rect, rect2: &Rect) -> (f64, f64, f64) {
@@ -119,6 +123,17 @@ impl Gripper {
             .map(|sg| rect_rect_area_center(&sg.shape.translate(dx, dy), &rect))
             .collect();
         area_centers
+    }
+    pub fn loosen_collision_shape(&mut self, dx: f64, dy: f64, dz: f64) {
+        assert_eq!(dx >= 0.0 && dy >= 0.0 && dz >= 0.0, true);
+        let mut shapes = vec![];
+        for (tf, shape) in self.collision_shape.shapes().iter() {
+            let cuboid = shape.downcast_ref::<Cuboid<f64>>().unwrap();
+            let hsize = cuboid.half_extents + na::Vector3::new(dx, dy, dz);
+            let new_cuboid = Cuboid::new(hsize);
+            shapes.push((tf.clone(), ShapeHandle::new(new_cuboid)));
+        }
+        self.collision_shape = Compound::new(shapes);
     }
 }
 
