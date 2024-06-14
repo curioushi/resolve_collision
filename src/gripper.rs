@@ -2,6 +2,7 @@ use crate::common::{isometry_to_vec, vec_to_isometry, CuboidSerde, CuboidWithTf,
 use geo::algorithm::{Area, Translate};
 use geo_types::{coord, Rect};
 use ncollide3d::na;
+use ncollide3d::query::Ray;
 use ncollide3d::shape::{Compound, Cuboid, ShapeHandle};
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +94,36 @@ fn rect_rect_area_center(rect1: &Rect, rect2: &Rect) -> (f64, f64, f64) {
 }
 
 impl Gripper {
+    pub fn suction_rays(&self, tf_world_tip: &na::Isometry3<f64>) -> Vec<Vec<Ray<f64>>> {
+        let direction = tf_world_tip.transform_vector(&na::Vector3::new(0.0, 0.0, 1.0));
+        let rays = self
+            .suction_groups
+            .iter()
+            .map(|sg| {
+                let min = sg.shape.min();
+                let max = sg.shape.max();
+                vec![
+                    Ray::new(
+                        tf_world_tip.transform_point(&na::Point3::new(min.x, min.y, 0.0)),
+                        direction,
+                    ),
+                    Ray::new(
+                        tf_world_tip.transform_point(&na::Point3::new(max.x, min.y, 0.0)),
+                        direction,
+                    ),
+                    Ray::new(
+                        tf_world_tip.transform_point(&na::Point3::new(max.x, max.y, 0.0)),
+                        direction,
+                    ),
+                    Ray::new(
+                        tf_world_tip.transform_point(&na::Point3::new(min.x, max.y, 0.0)),
+                        direction,
+                    ),
+                ]
+            })
+            .collect();
+        rays
+    }
     pub fn suction_areas(&self) -> Vec<f64> {
         let areas: Vec<f64> = self
             .suction_groups
@@ -137,8 +168,16 @@ impl Gripper {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PickType {
+    TopPick,
+    SidePick,
+    SidePickWithSupport,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PickPlan {
+    pub pick_type: PickType,
     pub score: f64,
     pub tf_world_tip: Isometry3Serde,
     pub tf_world_flange: Isometry3Serde,
@@ -155,6 +194,7 @@ pub struct PickPlanOptions {
     pub linear_choice: Option<usize>,
     pub max_plans_per_face: Option<usize>,
     pub centrality_filter: Option<f64>,
+    pub z_offset: Option<f64>,
 }
 
 impl Default for PickPlanOptions {
@@ -166,6 +206,7 @@ impl Default for PickPlanOptions {
             linear_choice: Some(21),
             max_plans_per_face: Some(5),
             centrality_filter: Some(0.7),
+            z_offset: Some(0.0136),
         }
     }
 }
@@ -189,6 +230,9 @@ impl PickPlanOptions {
         }
         if other.centrality_filter.is_some() {
             self.centrality_filter = other.centrality_filter;
+        }
+        if other.z_offset.is_some() {
+            self.z_offset = other.z_offset;
         }
     }
 }

@@ -5,10 +5,12 @@ use ncollide3d::bounding_volume::{BoundingVolume, HasBoundingVolume, AABB};
 use ncollide3d::na;
 use ncollide3d::partitioning::{BVH, BVT};
 use ncollide3d::query::visitors::BoundingVolumeInterferencesCollector;
+use ncollide3d::query::visitors::RayInterferencesCollector;
+use ncollide3d::query::RayCast;
 use ncollide3d::query::{self, PointQuery};
 use ndarray::Array;
 use resolve_collision::common::{Container, CuboidWithTf, Isometry3Serde};
-use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions};
+use resolve_collision::gripper::{Gripper, GripperSerde, PickPlan, PickPlanOptions, PickType};
 use resolve_collision::pcd_io::read_pcd;
 use std::collections::HashMap;
 
@@ -83,7 +85,9 @@ fn load_from_args(
     (cubes, pickable_mask, container, pcd, gripper, options)
 }
 
-fn simple_pick<F>(
+fn simple_pick<F, G>(
+    pick_type: &PickType,
+    rot_z_list: &Vec<f64>,
     cubes: &Vec<CuboidWithTf>,
     pickable_mask: &Vec<bool>,
     gripper: &Gripper,
@@ -92,11 +96,12 @@ fn simple_pick<F>(
     voxel_map: &Option<VoxelMap>,
     options: &PickPlanOptions,
     initial_guess: F,
+    sliding_pattern: G,
 ) -> Vec<PickPlan>
 where
     F: Fn(&CuboidWithTf) -> (Vec<na::Point3<f64>>, na::Isometry3<f64>),
+    G: Fn(&Rect, &Rect, &PickPlanOptions) -> (Vec<f64>, Vec<f64>),
 {
-    let linear_choice = options.linear_choice.unwrap().clamp(1, 51);
     let min_centrality = options.centrality_filter.unwrap().clamp(0.0, 1.0);
 
     let mut pick_plans = vec![];
@@ -116,15 +121,10 @@ where
         let (face_points, base_tip_tf) = initial_guess(cube);
 
         let mut pick_plans_of_face = vec![];
-        for rot_z in vec![
-            0.0,
-            std::f64::consts::FRAC_PI_2,
-            std::f64::consts::PI,
-            std::f64::consts::PI + std::f64::consts::FRAC_PI_2,
-        ] {
+        for rot_z in rot_z_list.iter() {
             let rot_z = na::Isometry3::from_parts(
                 na::Translation3::new(0.0, 0.0, 0.0),
-                na::UnitQuaternion::from_axis_angle(&na::Vector3::z_axis(), rot_z),
+                na::UnitQuaternion::from_axis_angle(&na::Vector3::z_axis(), *rot_z),
             );
             let tf_world_tip = base_tip_tf * rot_z;
             let face_points_proj = face_points
@@ -146,14 +146,9 @@ where
             }
             let face_rect = Rect::new(coord! {x: min_x, y: min_y}, coord! {x: max_x, y: max_y});
             let face_area = face_rect.unsigned_area();
-            let x1 = face_rect.min().x - suction_rect.max().x;
-            let x2 = face_rect.max().x - suction_rect.min().x;
-            let step_x = (x2 - x1) / (linear_choice + 1) as f64;
-            let y1 = face_rect.min().y - suction_rect.max().y;
-            let y2 = face_rect.max().y - suction_rect.min().y;
-            let step_y = (y2 - y1) / (linear_choice + 1) as f64;
-            for dx in Array::linspace(x1 + step_x, x2 - step_x, linear_choice).iter() {
-                for dy in Array::linspace(y1 + step_y, y2 - step_y, linear_choice).iter() {
+            let (dx_list, dy_list) = sliding_pattern(&face_rect, &suction_rect, options);
+            for dx in dx_list.iter() {
+                for dy in dy_list.iter() {
                     let tf_offset = na::Isometry3::from_parts(
                         na::Translation3::new(*dx, *dy, 0.0),
                         na::UnitQuaternion::identity(),
@@ -202,14 +197,13 @@ where
                     }
                     let score = (iou + centrality) * 0.5;
 
-                    // TODO: consider error suction
-                    // TODO: check weight if other_box_indices is not empty
-                    // TODO: merge boxes
+                    let tf_world_tip = tf_world_tip * tf_offset;
                     pick_plans_of_face.push(PickPlan {
+                        pick_type: pick_type.clone(),
                         score,
-                        tf_world_tip: Isometry3Serde::new(tf_world_tip * tf_offset),
+                        tf_world_tip: Isometry3Serde::new(tf_world_tip),
                         tf_world_flange: Isometry3Serde::new(
-                            tf_world_tip * tf_offset * gripper.tf_flange_tip.inverse(),
+                            tf_world_tip * gripper.tf_flange_tip.inverse(),
                         ),
                         suction_group_mask,
                         main_box_index: i,
@@ -219,7 +213,7 @@ where
             }
         }
         pick_plans_of_face.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        pick_plans_of_face = filter_by_collision(
+        pick_plans_of_face = filter_by_conditions(
             pick_plans_of_face,
             collision_cubes,
             bvt,
@@ -271,7 +265,7 @@ impl VoxelMap {
     }
 }
 
-fn filter_by_collision(
+fn filter_by_conditions(
     pick_plans: Vec<PickPlan>,
     cubes: &Vec<CuboidWithTf>,
     bvt: &BVT<usize, AABB<f64>>,
@@ -284,13 +278,14 @@ fn filter_by_collision(
         return pick_plans.into_iter().take(max_plans_per_face).collect();
     }
     let dsafe = 1e-4; // we have loosen the collision shape before, so we can use a small value here
+    let soft_length = gripper.soft_length;
 
-    let mut collision_free_plans: Vec<PickPlan> = vec![];
+    let mut valid_plans: Vec<PickPlan> = vec![];
     for pick_plan in pick_plans.into_iter() {
-        if collision_free_plans.len() >= max_plans_per_face {
+        if valid_plans.len() >= max_plans_per_face {
             break;
         }
-        let mut collision = false;
+        let mut filtered = false;
         let bv: AABB<f64> = gripper
             .collision_shape
             .bounding_volume(&pick_plan.tf_world_flange);
@@ -310,11 +305,11 @@ fn filter_by_collision(
                 cubes[*j].cuboid.as_ref(),
             );
             if distance <= dsafe {
-                collision = true;
+                filtered = true;
                 break;
             }
         }
-        if collision {
+        if filtered {
             continue;
         }
 
@@ -337,23 +332,59 @@ fn filter_by_collision(
                                 true,
                             );
                             if distance <= dsafe {
-                                collision = true;
+                                filtered = true;
                                 break;
                             }
                         }
                     }
-                    if collision {
+                    if filtered {
                         break;
                     }
                 }
             }
         }
+        if filtered {
+            continue;
+        }
 
-        if !collision {
-            collision_free_plans.push(pick_plan);
+        // check error suction
+        // TODO: check weight if other_box_indices is not empty
+        // TODO: merge boxes
+        let rays_group = gripper.suction_rays(&pick_plan.tf_world_tip);
+        for (rays, suck) in rays_group.iter().zip(pick_plan.suction_group_mask.iter()) {
+            if !(*suck) {
+                continue;
+            }
+            for ray in rays.iter() {
+                let mut inters = vec![];
+                let mut visitor = RayInterferencesCollector::new(ray, soft_length, &mut inters);
+                bvt.visit(&mut visitor);
+                for j in inters.iter() {
+                    if pick_plan.main_box_index != *j
+                        && j < &cubes.len()
+                        && cubes[*j]
+                            .cuboid
+                            .intersects_ray(&cubes[*j].tf, ray, soft_length)
+                    {
+                        // TODO: check projected area
+                        filtered = true;
+                        break;
+                    }
+                }
+                if filtered {
+                    break;
+                }
+            }
+            if filtered {
+                break;
+            }
+        }
+
+        if !filtered {
+            valid_plans.push(pick_plan);
         }
     }
-    collision_free_plans
+    valid_plans
 }
 
 fn main() {
@@ -396,6 +427,13 @@ fn main() {
 
     // top pick
     let top_pick_plans = simple_pick(
+        &PickType::TopPick,
+        &vec![
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+            std::f64::consts::PI + std::f64::consts::FRAC_PI_2,
+        ],
         &cubes,
         &pickable_mask,
         &gripper,
@@ -419,11 +457,37 @@ fn main() {
             );
             (face_points, base_tip_tf)
         },
+        |face_rect, suction_rect, options| {
+            let linear_choice = options.linear_choice.unwrap().clamp(1, 51);
+            let x1 = face_rect.min().x - suction_rect.max().x;
+            let x2 = face_rect.max().x - suction_rect.min().x;
+            let step_x = (x2 - x1) / (linear_choice + 1) as f64;
+            let y1 = face_rect.min().y - suction_rect.max().y;
+            let y2 = face_rect.max().y - suction_rect.min().y;
+            let step_y = (y2 - y1) / (linear_choice + 1) as f64;
+            (
+                Array::linspace(x1 + step_x, x2 - step_x, linear_choice)
+                    .iter()
+                    .cloned()
+                    .collect(),
+                Array::linspace(y1 + step_y, y2 - step_y, linear_choice)
+                    .iter()
+                    .cloned()
+                    .collect(),
+            )
+        },
     );
     let time4 = std::time::Instant::now();
 
     // side pick
     let side_pick_plans = simple_pick(
+        &PickType::SidePick,
+        &vec![
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+            std::f64::consts::PI + std::f64::consts::FRAC_PI_2,
+        ],
         &cubes,
         &pickable_mask,
         &gripper,
@@ -450,21 +514,97 @@ fn main() {
             );
             (face_points, base_tip_tf)
         },
+        |face_rect, suction_rect, options| {
+            let linear_choice = options.linear_choice.unwrap().clamp(1, 51);
+            let x1 = face_rect.min().x - suction_rect.max().x;
+            let x2 = face_rect.max().x - suction_rect.min().x;
+            let step_x = (x2 - x1) / (linear_choice + 1) as f64;
+            let y1 = face_rect.min().y - suction_rect.max().y;
+            let y2 = face_rect.max().y - suction_rect.min().y;
+            let step_y = (y2 - y1) / (linear_choice + 1) as f64;
+            (
+                Array::linspace(x1 + step_x, x2 - step_x, linear_choice)
+                    .iter()
+                    .cloned()
+                    .collect(),
+                Array::linspace(y1 + step_y, y2 - step_y, linear_choice)
+                    .iter()
+                    .cloned()
+                    .collect(),
+            )
+        },
     );
     let time5 = std::time::Instant::now();
+
+    // side pick with support
+    let mut special_options = options.clone();
+    special_options.centrality_filter = Some(0.4);
+    let side_pick_support_plans = simple_pick(
+        &PickType::SidePickWithSupport,
+        &vec![0.0],
+        &cubes,
+        &pickable_mask,
+        &gripper,
+        &collision_cubes,
+        &bvt,
+        &voxel_map,
+        &special_options,
+        |c| {
+            let hsize = c.cuboid.half_extents;
+            let face_points = vec![
+                c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], -hsize[1], -hsize[2])),
+                c.tf.transform_point(&na::Point3::new(-hsize[0], hsize[1], -hsize[2])),
+            ];
+            let position = c.tf.transform_point(&na::Point3::new(-hsize[0], 0.0, 0.0));
+            let base_tip_tf = na::Isometry3::from_parts(
+                na::Translation3::new(position.x, position.y, position.z),
+                c.tf.rotation
+                    * na::Rotation3::from_axis_angle(
+                        &na::Vector3::y_axis(),
+                        std::f64::consts::FRAC_PI_2,
+                    )
+                    * na::Rotation3::from_axis_angle(
+                        &na::Vector3::z_axis(),
+                        std::f64::consts::FRAC_PI_2,
+                    ),
+            );
+            (face_points, base_tip_tf)
+        },
+        |face_rect, suction_rect, options| {
+            let linear_choice = options.linear_choice.unwrap().clamp(1, 51);
+            let offset = options.z_offset.unwrap();
+            let x1 = face_rect.min().x - suction_rect.max().x;
+            let x2 = face_rect.max().x - suction_rect.min().x;
+            let step_x = (x2 - x1) / (linear_choice + 1) as f64;
+            let y = face_rect.min().y - suction_rect.min().y + offset;
+            (
+                Array::linspace(x1 + step_x, x2 - step_x, linear_choice)
+                    .iter()
+                    .cloned()
+                    .collect(),
+                Array::linspace(y, y, 1).iter().cloned().collect(),
+            )
+        },
+    );
+    let time6 = std::time::Instant::now();
     let pick_plans: Vec<PickPlan> = top_pick_plans
         .into_iter()
         .chain(side_pick_plans.into_iter())
+        .chain(side_pick_support_plans.into_iter())
         .collect();
-    let time6 = std::time::Instant::now();
+    // let pick_plans = side_pick_support_plans;
+    let time7 = std::time::Instant::now();
 
     let output_file = std::fs::File::create(&args.output).expect("Failed to create JSON file");
     serde_json::to_writer(output_file, &pick_plans).expect("Failed to write JSON file");
-    let time7 = std::time::Instant::now();
+    let time8 = std::time::Instant::now();
     println!("CLI + Load Json time: {:?}", time2 - time1);
     println!("Prepare Collision time: {:?}", time3 - time2);
     println!("Top Pick time: {:?}", time4 - time3);
     println!("Side Pick time: {:?}", time5 - time4);
-    println!("Concat time: {:?}", time6 - time5);
-    println!("Deserialize + Write time: {:?}", time7 - time6);
+    println!("Side Pick with Support time: {:?}", time6 - time5);
+    println!("Computation time: {:?}", time7 - time2);
+    println!("Deserialize + Write time: {:?}", time8 - time7);
 }
