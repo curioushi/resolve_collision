@@ -1,6 +1,6 @@
 use ncollide3d::{na, simba::scalar::SubsetOf};
 use rand::Rng;
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 #[rustfmt::skip]
 fn fk(a1: f64, a2: f64, a3: f64, a4: f64, a5: f64, a6: f64) -> na::Isometry3<f64> {
@@ -87,9 +87,9 @@ fn ik(tf_0_flange: &na::Isometry3<f64>) -> Vec<(f64, f64, f64, f64, f64, f64)> {
     let mut solutions = Vec::with_capacity(8);
     // a1
     let a1_1 = y.atan2(x);
-    let mut a1_2 = a1_1 + std::f64::consts::PI;
-    if a1_2 > std::f64::consts::TAU {
-        a1_2 -= std::f64::consts::TAU;
+    let mut a1_2 = a1_1 + PI;
+    if a1_2 > TAU {
+        a1_2 -= TAU;
     }
     // solve (a2, a3) with a1_1
     let x1 = x - K1 * a1_1.cos();
@@ -108,7 +108,7 @@ fn ik(tf_0_flange: &na::Isometry3<f64>) -> Vec<(f64, f64, f64, f64, f64, f64)> {
         solutions.push((a1_1, a2, a3, a4_2, a5_2, a6_2));
 
         let a2 = gamma2 + square_xy.sqrt().atan2(z);
-        let a3 = -GAMMA1 - a3_acos + std::f64::consts::TAU;
+        let a3 = -GAMMA1 - a3_acos + TAU;
         let tf_3_6 = fk03(a1_1, a2, a3).inverse() * tf_0_6;
         let ((a4_1, a5_1, a6_1), (a4_2, a5_2, a6_2)) =
             solve_wrist_angles(&tf_3_6.rotation.to_rotation_matrix());
@@ -132,7 +132,7 @@ fn ik(tf_0_flange: &na::Isometry3<f64>) -> Vec<(f64, f64, f64, f64, f64, f64)> {
         solutions.push((a1_2, a2, a3, a4_2, a5_2, a6_2));
 
         let a2 = gamma2 - square_xy.sqrt().atan2(z);
-        let a3 = -GAMMA1 - a3_acos + std::f64::consts::TAU;
+        let a3 = -GAMMA1 - a3_acos + TAU;
         let tf_3_6 = fk03(a1_2, a2, a3).inverse() * tf_0_6;
         let ((a4_1, a5_1, a6_1), (a4_2, a5_2, a6_2)) =
             solve_wrist_angles(&tf_3_6.rotation.to_rotation_matrix());
@@ -147,12 +147,12 @@ fn main() {
     let mut rng = rand::thread_rng();
     let mut sum = std::time::Duration::new(0, 0);
     for _ in 0..1000000 {
-        let a1 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
-        let a2 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
-        let a3 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
-        let a4 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
-        let a5 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
-        let a6 = rng.gen_range(-std::f64::consts::PI..std::f64::consts::PI);
+        let a1 = rng.gen_range(-PI..PI);
+        let a2 = rng.gen_range(-PI..PI);
+        let a3 = rng.gen_range(-PI..PI);
+        let a4 = rng.gen_range(-PI..PI);
+        let a5 = rng.gen_range(-PI..PI);
+        let a6 = rng.gen_range(-PI..PI);
         let t1 = std::time::Instant::now();
         let end_pose = fk(a1, a2, a3, a4, a5, a6);
         let t2 = std::time::Instant::now();
