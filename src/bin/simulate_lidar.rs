@@ -10,24 +10,10 @@ use ncollide3d::query::visitors::RayInterferencesCollector;
 use ncollide3d::query::{Ray, RayCast};
 use ncollide3d::shape::TriMesh;
 use resolve_collision::common::CuboidWithTf;
+use resolve_collision::lidar::{create_rays, LidarInfo};
 use resolve_collision::pcd_io::write_pcd_with_normal;
-use serde::{Deserialize, Serialize};
 use std::io::Write;
 use stl_io::read_stl;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct LidarSerde {
-    tf: Vec<Vec<f64>>,
-    model: String,
-    num_frames: Option<usize>,
-}
-
-#[derive(Debug)]
-struct LidarInfo {
-    tf: na::Isometry3<f64>,
-    model: String,
-    num_frames: Option<usize>,
-}
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -58,34 +44,13 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
 
     let str1 = std::fs::read_to_string(&json_files[0]).unwrap();
     let str2 = std::fs::read_to_string(&json_files[1]).unwrap();
-    let (cubes, lidar_serdes) = match serde_json::from_str::<Vec<CuboidWithTf>>(&str1) {
-        Ok(temp) => (
-            temp,
-            serde_json::from_str::<Vec<LidarSerde>>(&str2).unwrap(),
-        ),
+    let (cubes, lidars) = match serde_json::from_str::<Vec<CuboidWithTf>>(&str1) {
+        Ok(temp) => (temp, serde_json::from_str::<Vec<LidarInfo>>(&str2).unwrap()),
         Err(_) => (
             serde_json::from_str::<Vec<CuboidWithTf>>(&str2).unwrap(),
-            serde_json::from_str::<Vec<LidarSerde>>(&str1).unwrap(),
+            serde_json::from_str::<Vec<LidarInfo>>(&str1).unwrap(),
         ),
     };
-
-    let lidars: Vec<LidarInfo> = lidar_serdes
-        .iter()
-        .map(|t| {
-            let rotmat = na::Rotation3::from_matrix_unchecked(na::Matrix3::from_columns(&[
-                na::Vector3::new(t.tf[0][0], t.tf[1][0], t.tf[2][0]),
-                na::Vector3::new(t.tf[0][1], t.tf[1][1], t.tf[2][1]),
-                na::Vector3::new(t.tf[0][2], t.tf[1][2], t.tf[2][2]),
-            ]));
-            let translation = na::Translation3::new(t.tf[0][3], t.tf[1][3], t.tf[2][3]);
-            let tf = na::Isometry3::from_parts(translation, rotmat.into());
-            LidarInfo {
-                tf,
-                model: t.model.clone(),
-                num_frames: t.num_frames,
-            }
-        })
-        .collect();
 
     if stl_files.len() == 1 {
         let file = std::fs::File::open(&stl_files[0]).unwrap();
@@ -108,33 +73,6 @@ fn load_from_directory(dir: &str) -> (Vec<CuboidWithTf>, Option<TriMesh<f64>>, V
     } else {
         (cubes, None, lidars)
     }
-}
-
-fn create_rays(lidar_info: &LidarInfo) -> Vec<Ray<f64>> {
-    let mut rays: Vec<Ray<f64>> = vec![];
-    if lidar_info.model == "LIVOX-MID-360" {
-        let points_per_second = 200000;
-        let num_frames = lidar_info.num_frames.clone().unwrap();
-        let num_points = num_frames * 20000;
-        for i in 0..num_points {
-            let t = i as f64 / points_per_second as f64;
-            let vertical_angle = 0.45 * (62.055 * t).sin() + 0.076 * (1000000.0 * t).sin() + 0.4;
-            let horizontal_angle =
-                (1137.0 * t).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI;
-            let origin = na::Point3::new(0.0, 0.0, 0.0);
-            let dir = na::Vector3::new(
-                vertical_angle.cos() * horizontal_angle.cos(),
-                vertical_angle.cos() * horizontal_angle.sin(),
-                vertical_angle.sin(),
-            );
-            rays.push(Ray::new(origin, dir));
-        }
-    }
-    for ray in rays.iter_mut() {
-        ray.origin = lidar_info.tf.transform_point(&ray.origin);
-        ray.dir = lidar_info.tf.transform_vector(&ray.dir);
-    }
-    rays
 }
 
 fn ray_casting(
