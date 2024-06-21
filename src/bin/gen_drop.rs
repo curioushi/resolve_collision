@@ -376,7 +376,9 @@ fn main() {
         let tf_container_base = container.tf.inverse();
         let (mins, maxs) = compute_valid_region(&boxes, &container);
         let mut j = 0;
-        while j < options.samples_per_scene {
+        let mut num_try = 0;
+        while j < options.samples_per_scene && num_try < 10 {
+            num_try += 1;
             let sample = sample_dropped_box(&mins, &maxs, &tf_container_base, &options);
             if let Some((dropped_box, region)) = sample {
                 // in base frame
