@@ -193,7 +193,7 @@ fn sample_dropped_box(
     };
     let base_x = tf_container_base.translation.x;
     let mins = na::Point2::new(mins.x.max(base_x - 3.0), mins.y);
-    let maxs = na::Point2::new(maxs.x.min(base_x + 3.0), maxs.y);
+    let maxs = na::Point2::new(maxs.x.min(base_x + 4.0), maxs.y);
     let mut rng = rand::thread_rng();
     let size_x = rng.gen_range(options.length_range[0]..options.length_range[1]);
     let size_y = rng.gen_range(options.width_range[0]..options.width_range[1]);
@@ -246,7 +246,7 @@ fn sample_dropped_box(
             0.0,
         ) == query::Proximity::Disjoint
         {
-            let ratio = rng.gen_range(0.1..0.9);
+            let ratio = rng.gen_range(0.1..0.45);
             let mins2 = mins + ratio * na::Vector2::new(aabb_size.x, aabb_size.y);
             let maxs2 = maxs - ratio * na::Vector2::new(aabb_size.x, aabb_size.y);
             let size2 = maxs2 - mins2;
