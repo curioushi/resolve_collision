@@ -2,7 +2,7 @@ use ncollide3d::na;
 use ncollide3d::query;
 use ncollide3d::shape::{ConvexHull, TriMesh};
 use rand::Rng;
-use resolve_collision::robot::{fk0, fk01, fk12, fk23, fk34, fk45, fk56};
+use resolve_collision::fanuc::{fk0, fk01, fk12, fk23, fk34, fk45, fk56};
 use stl_io::read_stl;
 
 struct RobotArm {

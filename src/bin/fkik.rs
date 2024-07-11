@@ -1,6 +1,6 @@
 use ncollide3d::na;
 use rand::Rng;
-use resolve_collision::robot::{fk, ik};
+use resolve_collision::fanuc::{fk, ik};
 use std::f64::consts::PI;
 
 fn main() {
