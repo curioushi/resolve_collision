@@ -11,8 +11,8 @@ struct RobotArm {
 }
 
 impl RobotArm {
-    fn new(links: Vec<TriMesh<f64>>) -> Self {
-        let links_convex = links
+    fn new(links: Vec<TriMesh<f64>>, links_convex: Vec<TriMesh<f64>>) -> Self {
+        let links_convex = links_convex
             .iter()
             .map(|link| ConvexHull::try_from_points(link.points()).unwrap())
             .collect::<Vec<_>>();
@@ -99,57 +99,32 @@ fn convert_trimesh_to_rerun(
 }
 
 const FANUC_YELLOW: (u8, u8, u8) = (247, 202, 1);
+const WARNING_RED: (u8, u8, u8) = (255, 0, 0);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let robot_arm = RobotArm::new(vec![
-        read_stl_file("data/fanuc/convex/link0.stl"),
-        read_stl_file("data/fanuc/convex/link1.stl"),
-        read_stl_file("data/fanuc/convex/link2.stl"),
-        read_stl_file("data/fanuc/convex/link3.stl"),
-        read_stl_file("data/fanuc/convex/link4.stl"),
-        read_stl_file("data/fanuc/convex/link5.stl"),
-        read_stl_file("data/fanuc/convex/link6.stl"),
-    ]);
-
-    for i in 0..robot_arm.links.len() {
-        let link = &robot_arm.links[i];
-        let link_convex = &robot_arm.links_convex[i];
-        println!("Link {}: {} vertices", i, link.points().len());
-        println!("Link Convex {}: {} vertices", i, link_convex.points().len());
-    }
-
-    let t1 = std::time::Instant::now();
-    let mut count = 0;
-    for _ in 0..1000 {
-        for i in 0..robot_arm.links.len() - 1 {
-            let link1 = &robot_arm.links_convex[i];
-            let link2 = &robot_arm.links_convex[i + 1];
-            let prox = query::proximity(
-                &na::Isometry3::identity(),
-                link1,
-                &na::Isometry3::identity(),
-                link2,
-                0.0,
-            );
-            // println!("{} -> {}: {:?}", i, i + 1, prox);
-            count += 1;
-        }
-    }
-    let t2 = std::time::Instant::now();
-    println!("Avg Time: {:?}", (t2 - t1) / count);
+    let robot_arm = RobotArm::new(
+        vec![
+            read_stl_file("data/fanuc/mesh/link0.stl"),
+            read_stl_file("data/fanuc/mesh/link1.stl"),
+            read_stl_file("data/fanuc/mesh/link2.stl"),
+            read_stl_file("data/fanuc/mesh/link3.stl"),
+            read_stl_file("data/fanuc/mesh/link4.stl"),
+            read_stl_file("data/fanuc/mesh/link5.stl"),
+            read_stl_file("data/fanuc/mesh/link6.stl"),
+        ],
+        vec![
+            read_stl_file("data/fanuc/convex/link0.stl"),
+            read_stl_file("data/fanuc/convex/link1.stl"),
+            read_stl_file("data/fanuc/convex/link2.stl"),
+            read_stl_file("data/fanuc/convex/link3.stl"),
+            read_stl_file("data/fanuc/convex/link4.stl"),
+            read_stl_file("data/fanuc/convex/link5.stl"),
+            read_stl_file("data/fanuc/convex/link6.stl"),
+        ],
+    );
 
     let rec = rerun::RecordingStreamBuilder::new("self_collision").spawn()?;
-    for (i, link) in robot_arm.links.iter().enumerate() {
-        let (vertices, indices, vertex_normals, vertex_colors) =
-            convert_trimesh_to_rerun(link, FANUC_YELLOW);
-        rec.log(
-            format!("link_{}", i),
-            &rerun::Mesh3D::new(vertices)
-                .with_triangle_indices(indices)
-                .with_vertex_normals(vertex_normals)
-                .with_vertex_colors(vertex_colors),
-        )?;
-    }
+    let mut frame = 0;
     let mut rng = rand::thread_rng();
     let origin_0 = fk0();
     let origin_1 = origin_0 * fk01(0.0);
@@ -158,10 +133,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let origin_4 = origin_3 * fk34(0.0);
     let origin_5 = origin_4 * fk45(0.0);
     let origin_6 = origin_5 * fk56(0.0);
+    let mut avg_collision_matrix = vec![vec![0.0; robot_arm.links.len()]; robot_arm.links.len()];
     loop {
+        frame += 1;
+        rec.set_time_sequence("frame", frame);
         let a1 = (rng.gen_range(-185..185) as f64).to_radians();
         let a2 = (rng.gen_range(-85..130) as f64).to_radians();
-        let a3 = (rng.gen_range(-120..80) as f64).to_radians();
+        let a3 = (rng.gen_range(-120..80) as f64).to_radians() + a2;
         let a4 = (rng.gen_range(-200..200) as f64).to_radians();
         let a5 = (rng.gen_range(-140..140) as f64).to_radians();
         let a6 = (rng.gen_range(-270..270) as f64).to_radians();
@@ -172,15 +150,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tf4 = tf3 * fk34(a4);
         let tf5 = tf4 * fk45(a5);
         let tf6 = tf5 * fk56(a6);
+        let tf0 = tf0 * origin_0.inverse();
         let tf1 = tf1 * origin_1.inverse();
         let tf2 = tf2 * origin_2.inverse();
         let tf3 = tf3 * origin_3.inverse();
         let tf4 = tf4 * origin_4.inverse();
         let tf5 = tf5 * origin_5.inverse();
         let tf6 = tf6 * origin_6.inverse();
-        for (i, tf) in vec![tf1, tf2, tf3, tf4, tf5, tf6].iter().enumerate() {
+        let tfs = vec![tf0, tf1, tf2, tf3, tf4, tf5, tf6];
+
+        let t1 = std::time::Instant::now();
+        let mut collision_matrix = vec![vec![false; robot_arm.links.len()]; robot_arm.links.len()];
+        for i in [0, 1] {
+            let link1 = &robot_arm.links_convex[i];
+            let tf1 = tfs[i];
+            for j in [4, 5, 6] {
+                let link2 = &robot_arm.links_convex[j];
+                let tf2 = tfs[j];
+                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.0);
+                match prox {
+                    query::Proximity::Intersecting => {
+                        collision_matrix[i][j] = true;
+                        collision_matrix[j][i] = true;
+                        avg_collision_matrix[i][j] += 1.0;
+                        avg_collision_matrix[j][i] += 1.0;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let t2 = std::time::Instant::now();
+
+        for (i, link) in robot_arm.links.iter().enumerate() {
+            let is_collision = collision_matrix[i].iter().any(|&x| x);
+            let color = if is_collision {
+                WARNING_RED
+            } else {
+                FANUC_YELLOW
+            };
+            let (vertices, indices, vertex_normals, vertex_colors) =
+                convert_trimesh_to_rerun(link, color);
+            rec.set_time_sequence("frame", frame);
             rec.log(
-                format!("link_{}", i + 1),
+                format!("link_{}", i),
+                &rerun::Mesh3D::new(vertices)
+                    .with_triangle_indices(indices)
+                    .with_vertex_normals(vertex_normals)
+                    .with_vertex_colors(vertex_colors),
+            )?;
+        }
+
+        let mut collision_matrix_str = String::new();
+        collision_matrix_str.push_str("# Collision Matrix\n");
+        for i in 0..robot_arm.links.len() {
+            for j in 0..robot_arm.links.len() {
+                if collision_matrix[i][j] {
+                    collision_matrix_str.push_str("X");
+                } else {
+                    collision_matrix_str.push_str("0");
+                }
+            }
+            collision_matrix_str.push_str("\n");
+        }
+        rec.log(
+            "collision_matrix",
+            &rerun::TextDocument::new(collision_matrix_str),
+        )?;
+        println!("Self Collision Time: {:?}", (t2 - t1));
+
+        for (i, tf) in tfs.iter().enumerate() {
+            rec.log(
+                format!("link_{}", i),
                 &rerun::Transform3D::from_translation_rotation(
                     (
                         tf.translation.x as f32,
@@ -196,7 +236,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
             )?;
         }
+        if frame == 3000 {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    for i in 0..robot_arm.links.len() {
+        for j in 0..robot_arm.links.len() {
+            avg_collision_matrix[i][j] /= 3000.0;
+        }
+        println!("{:?}", avg_collision_matrix[i]);
     }
     Ok(())
 }
