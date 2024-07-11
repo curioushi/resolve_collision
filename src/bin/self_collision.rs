@@ -3,6 +3,7 @@ use ncollide3d::query;
 use ncollide3d::shape::{ConvexHull, TriMesh};
 use rand::Rng;
 use resolve_collision::fanuc::{fk0, fk01, fk12, fk23, fk34, fk45, fk56};
+use std::io::Write;
 use stl_io::read_stl;
 
 struct RobotArm {
@@ -123,8 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     );
 
+    let enable_log = false;
     let rec = rerun::RecordingStreamBuilder::new("self_collision").spawn()?;
-    let mut frame = 0;
     let mut rng = rand::thread_rng();
     let origin_0 = fk0();
     let origin_1 = origin_0 * fk01(0.0);
@@ -133,16 +134,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let origin_4 = origin_3 * fk34(0.0);
     let origin_5 = origin_4 * fk45(0.0);
     let origin_6 = origin_5 * fk56(0.0);
-    let mut avg_collision_matrix = vec![vec![0.0; robot_arm.links.len()]; robot_arm.links.len()];
-    loop {
-        frame += 1;
-        rec.set_time_sequence("frame", frame);
-        let a1 = (rng.gen_range(-185..185) as f64).to_radians();
-        let a2 = (rng.gen_range(-85..130) as f64).to_radians();
-        let a3 = (rng.gen_range(-120..80) as f64).to_radians() + a2;
-        let a4 = (rng.gen_range(-200..200) as f64).to_radians();
-        let a5 = (rng.gen_range(-140..140) as f64).to_radians();
-        let a6 = (rng.gen_range(-270..270) as f64).to_radians();
+    let mut joints = Vec::new();
+    while joints.len() < 1000000 {
+        let a1 = (rng.gen_range(-185.0..185.0) as f64).to_radians();
+        let a2 = (rng.gen_range(-85.0..130.0) as f64).to_radians();
+        let a3 = (rng.gen_range(-120.0..80.0) as f64).to_radians() + a2;
+        let a4 = (rng.gen_range(-200.0..200.0) as f64).to_radians();
+        let a5 = (rng.gen_range(-140.0..140.0) as f64).to_radians();
+        let a6 = (rng.gen_range(-270.0..270.0) as f64).to_radians();
         let tf0 = fk0();
         let tf1 = tf0 * fk01(a1);
         let tf2 = tf1 * fk12(a2);
@@ -159,94 +158,124 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tf6 = tf6 * origin_6.inverse();
         let tfs = vec![tf0, tf1, tf2, tf3, tf4, tf5, tf6];
 
-        let t1 = std::time::Instant::now();
         let mut collision_matrix = vec![vec![false; robot_arm.links.len()]; robot_arm.links.len()];
+        let mut is_collision = false;
         for i in [0, 1] {
             let link1 = &robot_arm.links_convex[i];
             let tf1 = tfs[i];
             for j in [4, 5, 6] {
                 let link2 = &robot_arm.links_convex[j];
                 let tf2 = tfs[j];
-                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.0);
+                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.03);
                 match prox {
                     query::Proximity::Intersecting => {
+                        is_collision = true;
                         collision_matrix[i][j] = true;
                         collision_matrix[j][i] = true;
-                        avg_collision_matrix[i][j] += 1.0;
-                        avg_collision_matrix[j][i] += 1.0;
+                    }
+                    query::Proximity::WithinMargin => {
+                        is_collision = true;
+                        collision_matrix[i][j] = true;
+                        collision_matrix[j][i] = true;
                     }
                     _ => {}
                 }
             }
         }
-        let t2 = std::time::Instant::now();
-
-        for (i, link) in robot_arm.links.iter().enumerate() {
-            let is_collision = collision_matrix[i].iter().any(|&x| x);
-            let color = if is_collision {
-                WARNING_RED
-            } else {
-                FANUC_YELLOW
-            };
-            let (vertices, indices, vertex_normals, vertex_colors) =
-                convert_trimesh_to_rerun(link, color);
-            rec.set_time_sequence("frame", frame);
-            rec.log(
-                format!("link_{}", i),
-                &rerun::Mesh3D::new(vertices)
-                    .with_triangle_indices(indices)
-                    .with_vertex_normals(vertex_normals)
-                    .with_vertex_colors(vertex_colors),
-            )?;
+        if is_collision {
+            continue;
         }
 
-        let mut collision_matrix_str = String::new();
-        collision_matrix_str.push_str("# Collision Matrix\n");
-        for i in 0..robot_arm.links.len() {
-            for j in 0..robot_arm.links.len() {
-                if collision_matrix[i][j] {
-                    collision_matrix_str.push_str("X");
+        let (a1, a2, a3, a4, a5, a6) = (
+            a1.to_degrees(),
+            a2.to_degrees(),
+            a3.to_degrees() - a2.to_degrees(),
+            a4.to_degrees(),
+            a5.to_degrees(),
+            a6.to_degrees(),
+        );
+
+        if a2 + a3 + 90.0 < 0.0 {
+            continue;
+        }
+
+        joints.push((a1, a2, a3, a4, a5, a6));
+
+        if enable_log {
+            rec.set_time_sequence("frame", joints.len() as i32);
+            for (i, link) in robot_arm.links.iter().enumerate() {
+                let is_collision = collision_matrix[i].iter().any(|&x| x);
+                let color = if is_collision {
+                    WARNING_RED
                 } else {
-                    collision_matrix_str.push_str("0");
-                }
+                    FANUC_YELLOW
+                };
+                let (vertices, indices, vertex_normals, vertex_colors) =
+                    convert_trimesh_to_rerun(link, color);
+                rec.log(
+                    format!("link_{}", i),
+                    &rerun::Mesh3D::new(vertices)
+                        .with_triangle_indices(indices)
+                        .with_vertex_normals(vertex_normals)
+                        .with_vertex_colors(vertex_colors),
+                )?;
             }
-            collision_matrix_str.push_str("\n");
-        }
-        rec.log(
-            "collision_matrix",
-            &rerun::TextDocument::new(collision_matrix_str),
-        )?;
-        println!("Self Collision Time: {:?}", (t2 - t1));
 
-        for (i, tf) in tfs.iter().enumerate() {
+            let mut collision_matrix_str = String::new();
+            collision_matrix_str.push_str("# Collision Matrix\n");
+            for i in 0..robot_arm.links.len() {
+                for j in 0..robot_arm.links.len() {
+                    if collision_matrix[i][j] {
+                        collision_matrix_str.push_str("X");
+                    } else {
+                        collision_matrix_str.push_str("0");
+                    }
+                }
+                collision_matrix_str.push_str("\n");
+            }
             rec.log(
-                format!("link_{}", i),
-                &rerun::Transform3D::from_translation_rotation(
-                    (
-                        tf.translation.x as f32,
-                        tf.translation.y as f32,
-                        tf.translation.z as f32,
-                    ),
-                    rerun::Quaternion::from_xyzw([
-                        tf.rotation.i as f32,
-                        tf.rotation.j as f32,
-                        tf.rotation.k as f32,
-                        tf.rotation.w as f32,
-                    ]),
-                ),
+                "collision_matrix",
+                &rerun::TextDocument::new(collision_matrix_str),
             )?;
+
+            let mut joints_str = String::new();
+            joints_str.push_str("# Joints\n");
+            joints_str
+                .push_str(format!("{}\n{}\n{}\n{}\n{}\n{}\n", a1, a2, a3, a4, a5, a6).as_str());
+            rec.log("joints", &rerun::TextDocument::new(joints_str))?;
+
+            for (i, tf) in tfs.iter().enumerate() {
+                rec.log(
+                    format!("link_{}", i),
+                    &rerun::Transform3D::from_translation_rotation(
+                        (
+                            tf.translation.x as f32,
+                            tf.translation.y as f32,
+                            tf.translation.z as f32,
+                        ),
+                        rerun::Quaternion::from_xyzw([
+                            tf.rotation.i as f32,
+                            tf.rotation.j as f32,
+                            tf.rotation.k as f32,
+                            tf.rotation.w as f32,
+                        ]),
+                    ),
+                )?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        if frame == 3000 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    for i in 0..robot_arm.links.len() {
-        for j in 0..robot_arm.links.len() {
-            avg_collision_matrix[i][j] /= 3000.0;
-        }
-        println!("{:?}", avg_collision_matrix[i]);
+    let mut file = std::fs::File::create("joints.csv")?;
+    for joint in joints {
+        file.write(
+            format!(
+                "{},{},{},{},{},{}\n",
+                joint.0, joint.1, joint.2, joint.3, joint.4, joint.5
+            )
+            .as_bytes(),
+        )?;
     }
+
     Ok(())
 }
