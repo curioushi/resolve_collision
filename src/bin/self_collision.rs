@@ -136,12 +136,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let origin_6 = origin_5 * fk56(0.0);
     let mut joints = Vec::new();
     while joints.len() < 1000000 {
+        if joints.len() % 10000 == 0 {
+            println!("{}", joints.len());
+        }
         let a1 = (rng.gen_range(-185.0..185.0) as f64).to_radians();
         let a2 = (rng.gen_range(-85.0..130.0) as f64).to_radians();
         let a3 = (rng.gen_range(-120.0..80.0) as f64).to_radians() + a2;
         let a4 = (rng.gen_range(-200.0..200.0) as f64).to_radians();
         let a5 = (rng.gen_range(-140.0..140.0) as f64).to_radians();
         let a6 = (rng.gen_range(-270.0..270.0) as f64).to_radians();
+        if a3 < -std::f64::consts::FRAC_PI_2 {
+            continue;
+        }
         let tf0 = fk0();
         let tf1 = tf0 * fk01(a1);
         let tf2 = tf1 * fk12(a2);
@@ -166,36 +172,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for j in [4, 5, 6] {
                 let link2 = &robot_arm.links_convex[j];
                 let tf2 = tfs[j];
-                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.03);
+                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.04);
                 match prox {
                     query::Proximity::Intersecting => {
                         is_collision = true;
                         collision_matrix[i][j] = true;
                         collision_matrix[j][i] = true;
+                        break;
                     }
                     query::Proximity::WithinMargin => {
                         is_collision = true;
                         collision_matrix[i][j] = true;
                         collision_matrix[j][i] = true;
+                        break;
                     }
                     _ => {}
                 }
+            }
+            if is_collision {
+                break;
             }
         }
         if is_collision {
             continue;
         }
-
-        let (a1, a2, a3, a4, a5, a6) = (
-            a1.to_degrees(),
-            a2.to_degrees(),
-            a3.to_degrees() - a2.to_degrees(),
-            a4.to_degrees(),
-            a5.to_degrees(),
-            a6.to_degrees(),
-        );
-
-        if a2 + a3 + 90.0 < 0.0 {
+        if joints.len() >= 1 {
+            let (b1, b2, b3, b4, b5, b6) = joints[joints.len() - 1];
+            for r in 1..20 {
+                let ratio = r as f64 / 20.0;
+                let (c1, c2, c3, c4, c5, c6) = (
+                    b1 + (a1 - b1) * ratio,
+                    b2 + (a2 - b2) * ratio,
+                    b3 + (a3 - b3) * ratio,
+                    b4 + (a4 - b4) * ratio,
+                    b5 + (a5 - b5) * ratio,
+                    b6 + (a6 - b6) * ratio,
+                );
+                let tf0 = fk0();
+                let tf1 = tf0 * fk01(c1);
+                let tf2 = tf1 * fk12(c2);
+                let tf3 = tf2 * fk23(c3);
+                let tf4 = tf3 * fk34(c4);
+                let tf5 = tf4 * fk45(c5);
+                let tf6 = tf5 * fk56(c6);
+                let tf0 = tf0 * origin_0.inverse();
+                let tf1 = tf1 * origin_1.inverse();
+                let tf2 = tf2 * origin_2.inverse();
+                let tf3 = tf3 * origin_3.inverse();
+                let tf4 = tf4 * origin_4.inverse();
+                let tf5 = tf5 * origin_5.inverse();
+                let tf6 = tf6 * origin_6.inverse();
+                let tfs = vec![tf0, tf1, tf2, tf3, tf4, tf5, tf6];
+                for i in [0, 1] {
+                    let link1 = &robot_arm.links_convex[i];
+                    let tf1 = tfs[i];
+                    for j in [4, 5, 6] {
+                        let link2 = &robot_arm.links_convex[j];
+                        let tf2 = tfs[j];
+                        let prox = query::proximity(&tf1, link1, &tf2, link2, 0.03);
+                        match prox {
+                            query::Proximity::Intersecting => {
+                                is_collision = true;
+                                collision_matrix[i][j] = true;
+                                collision_matrix[j][i] = true;
+                                break;
+                            }
+                            query::Proximity::WithinMargin => {
+                                is_collision = true;
+                                collision_matrix[i][j] = true;
+                                collision_matrix[j][i] = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_collision {
+                        break;
+                    }
+                }
+                if is_collision {
+                    break;
+                }
+            }
+        }
+        if is_collision {
             continue;
         }
 
@@ -238,6 +298,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &rerun::TextDocument::new(collision_matrix_str),
             )?;
 
+            let (a1, a2, a3, a4, a5, a6) = (
+                a1.to_degrees(),
+                a2.to_degrees(),
+                a3.to_degrees() - a2.to_degrees(),
+                a4.to_degrees(),
+                a5.to_degrees(),
+                a6.to_degrees(),
+            );
+
             let mut joints_str = String::new();
             joints_str.push_str("# Joints\n");
             joints_str
@@ -271,7 +340,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file.write(
             format!(
                 "{},{},{},{},{},{}\n",
-                joint.0, joint.1, joint.2, joint.3, joint.4, joint.5
+                joint.0.to_degrees(),
+                joint.1.to_degrees(),
+                joint.2.to_degrees() - joint.1.to_degrees(),
+                joint.3.to_degrees(),
+                joint.4.to_degrees(),
+                joint.5.to_degrees()
             )
             .as_bytes(),
         )?;
