@@ -172,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for j in [4, 5, 6] {
                 let link2 = &robot_arm.links_convex[j];
                 let tf2 = tfs[j];
-                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.07);
+                let prox = query::proximity(&tf1, link1, &tf2, link2, 0.10);
                 match prox {
                     query::Proximity::Intersecting => {
                         is_collision = true;
