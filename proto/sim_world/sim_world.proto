@@ -1,0 +1,13 @@
+syntax = "proto3";
+package sim_world;
+
+service SimWorld { rpc NewScene(EmptyRequest) returns (NewSceneResponse); }
+
+message Status {
+  int32 error_code = 1;
+  string message = 2;
+}
+
+message EmptyRequest {}
+
+message NewSceneResponse { Status status = 1; }
