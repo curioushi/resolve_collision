@@ -26,6 +26,7 @@ stl_io = "0.7.0"
 tonic = "0.12.0"
 prost = "0.13.1"
 tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread"] }
+rapier3d = "0.21.0"
 
 [build-dependencies]
 tonic-build = "0.12.0"

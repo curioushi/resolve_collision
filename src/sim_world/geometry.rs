@@ -32,6 +32,92 @@ pub fn to_rerun_mesh3d(vertices: &Vertices, indices: &Indices) -> rerun::Mesh3D 
         .with_vertex_normals(flatten_normals)
 }
 
+pub fn bake_cuboids_by_free_fall(
+    half_sizes: &Vec<(f32, f32, f32)>,
+    initial_poses: &Vec<na::Isometry3<f32>>,
+) -> Vec<na::Isometry3<f32>> {
+    assert_eq!(half_sizes.len(), initial_poses.len());
+    use rapier3d::prelude::*;
+    let mut rigid_body_set = RigidBodySet::new();
+    let mut collider_set = ColliderSet::new();
+
+    /* Create the ground. */
+    let collider = ColliderBuilder::cuboid(1000.0, 1000.0, 1.0).build();
+    let rigid_body = RigidBodyBuilder::fixed()
+        .translation(vector![0.0, 0.0, -1.0])
+        .build();
+    let body_handle = rigid_body_set.insert(rigid_body);
+    collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+
+    /* Create the cuboids  */
+    let mut body_handles = Vec::new();
+    for i in 0..half_sizes.len() {
+        let half_size = half_sizes[i];
+        let initial_pose = initial_poses[i];
+        let translation = initial_pose.translation;
+        let rotaiton = initial_pose.rotation.euler_angles();
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(vector![translation.x, translation.y, translation.z])
+            .rotation(vector![rotaiton.0, rotaiton.1, rotaiton.2])
+            .build();
+        let collider = ColliderBuilder::cuboid(half_size.0, half_size.1, half_size.2)
+            .restitution(0.7)
+            .build();
+        let body_handle = rigid_body_set.insert(rigid_body);
+        body_handles.push(body_handle);
+        collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+    }
+
+    /* Create other structures necessary for the simulation. */
+    let gravity = vector![0.0, 0.0, -9.81];
+    let integration_parameters = IntegrationParameters::default();
+    let mut physics_pipeline = PhysicsPipeline::new();
+    let mut island_manager = IslandManager::new();
+    let mut broad_phase = DefaultBroadPhase::new();
+    let mut narrow_phase = NarrowPhase::new();
+    let mut impulse_joint_set = ImpulseJointSet::new();
+    let mut multibody_joint_set = MultibodyJointSet::new();
+    let mut ccd_solver = CCDSolver::new();
+    let mut query_pipeline = QueryPipeline::new();
+    let physics_hooks = ();
+    let event_handler = ();
+
+    /* Bake the simulation. */
+    for _ in 0..400 {
+        physics_pipeline.step(
+            &gravity,
+            &integration_parameters,
+            &mut island_manager,
+            &mut broad_phase,
+            &mut narrow_phase,
+            &mut rigid_body_set,
+            &mut collider_set,
+            &mut impulse_joint_set,
+            &mut multibody_joint_set,
+            &mut ccd_solver,
+            Some(&mut query_pipeline),
+            &physics_hooks,
+            &event_handler,
+        );
+    }
+
+    let final_poses = body_handles
+        .iter()
+        .map(|h| {
+            let body = &rigid_body_set[*h];
+            let translation = body.translation();
+            let quat = body.rotation();
+            na::Isometry3::from_parts(
+                na::Translation3::new(translation.x, translation.y, translation.z),
+                na::UnitQuaternion::from_quaternion(na::Quaternion::new(
+                    quat.w, quat.i, quat.j, quat.k,
+                )),
+            )
+        })
+        .collect::<Vec<_>>();
+    final_poses
+}
+
 pub struct SceneNode {
     pub geometry: Option<Box<dyn Geometry>>,
     pub transform: Option<na::Isometry3<f32>>,
@@ -154,12 +240,14 @@ impl SceneTree {
 }
 
 pub enum GeometryType {
+    Ground,
     Carton,
     Container,
 }
 
 pub trait Geometry: Send + Sync {
     fn type_id(&self) -> GeometryType;
+    fn size(&self) -> (f32, f32, f32);
     fn vertices(&self) -> Vertices;
     fn indices(&self) -> Indices;
 }
@@ -181,6 +269,14 @@ impl Carton {
 }
 
 impl Geometry for Carton {
+    fn size(&self) -> (f32, f32, f32) {
+        let half_extents = self.cuboid.half_extents;
+        (
+            half_extents.x * 2.0,
+            half_extents.y * 2.0,
+            half_extents.z * 2.0,
+        )
+    }
     fn type_id(&self) -> GeometryType {
         GeometryType::Carton
     }
@@ -217,6 +313,7 @@ impl Geometry for Carton {
 }
 
 pub struct Container {
+    size: (f32, f32, f32),
     vertices: Vertices,
     indices: Indices,
 }
@@ -246,11 +343,18 @@ impl Container {
             (0, 7, 3),
             (0, 4, 7),
         ];
-        Self { vertices, indices }
+        Self {
+            size: (size_x, size_y, size_z),
+            vertices,
+            indices,
+        }
     }
 }
 
 impl Geometry for Container {
+    fn size(&self) -> (f32, f32, f32) {
+        self.size
+    }
     fn type_id(&self) -> GeometryType {
         GeometryType::Container
     }
@@ -259,5 +363,35 @@ impl Geometry for Container {
     }
     fn indices(&self) -> Indices {
         self.indices.clone()
+    }
+}
+
+pub struct Ground {
+    size: f32,
+}
+
+impl Ground {
+    pub fn new(size: f32) -> Self {
+        Self { size }
+    }
+}
+
+impl Geometry for Ground {
+    fn size(&self) -> (f32, f32, f32) {
+        (self.size, self.size, 0.0)
+    }
+    fn type_id(&self) -> GeometryType {
+        GeometryType::Ground
+    }
+    fn vertices(&self) -> Vertices {
+        vec![
+            (-self.size, -self.size, 0.0),
+            (self.size, -self.size, 0.0),
+            (self.size, self.size, 0.0),
+            (-self.size, self.size, 0.0),
+        ]
+    }
+    fn indices(&self) -> Indices {
+        vec![(0, 1, 2), (0, 2, 3)]
     }
 }
