@@ -153,8 +153,13 @@ impl SceneTree {
     }
 }
 
+pub enum GeometryType {
+    Carton,
+    Container,
+}
+
 pub trait Geometry: Send + Sync {
-    fn size(&self) -> (f32, f32, f32);
+    fn type_id(&self) -> GeometryType;
     fn vertices(&self) -> Vertices;
     fn indices(&self) -> Indices;
 }
@@ -164,23 +169,21 @@ pub struct Carton {
 }
 
 impl Carton {
-    pub fn new(half_size_x: f32, half_size_y: f32, half_size_z: f32) -> Self {
+    pub fn new(size_x: f32, size_y: f32, size_z: f32) -> Self {
         Self {
-            cuboid: Cuboid::new(na::Vector3::new(half_size_x, half_size_y, half_size_z)),
+            cuboid: Cuboid::new(na::Vector3::new(
+                size_x * 0.5f32,
+                size_y * 0.5f32,
+                size_z * 0.5f32,
+            )),
         }
     }
 }
 
 impl Geometry for Carton {
-    fn size(&self) -> (f32, f32, f32) {
-        let half_extents = self.cuboid.half_extents;
-        (
-            half_extents.x * 2.0f32,
-            half_extents.y * 2.0f32,
-            half_extents.z * 2.0f32,
-        )
+    fn type_id(&self) -> GeometryType {
+        GeometryType::Carton
     }
-
     fn vertices(&self) -> Vertices {
         let half_extents = self.cuboid.half_extents;
         vec![
@@ -210,5 +213,51 @@ impl Geometry for Carton {
             (0, 7, 3),
             (0, 4, 7),
         ]
+    }
+}
+
+pub struct Container {
+    vertices: Vertices,
+    indices: Indices,
+}
+
+impl Container {
+    pub fn new(size_x: f32, size_y: f32, size_z: f32) -> Self {
+        let hsize_y = size_y * 0.5f32;
+        let vertices = vec![
+            (0.0, hsize_y, 0.0),
+            (0.0, -hsize_y, 0.0),
+            (size_x, -hsize_y, 0.0),
+            (size_x, hsize_y, 0.0),
+            (0.0, hsize_y, size_z),
+            (0.0, -hsize_y, size_z),
+            (size_x, -hsize_y, size_z),
+            (size_x, hsize_y, size_z),
+        ];
+        let indices = vec![
+            (0, 2, 1),
+            (0, 3, 2),
+            (4, 5, 6),
+            (4, 6, 7),
+            (3, 6, 2),
+            (3, 7, 6),
+            (1, 2, 6),
+            (1, 6, 5),
+            (0, 7, 3),
+            (0, 4, 7),
+        ];
+        Self { vertices, indices }
+    }
+}
+
+impl Geometry for Container {
+    fn type_id(&self) -> GeometryType {
+        GeometryType::Container
+    }
+    fn vertices(&self) -> Vertices {
+        self.vertices.clone()
+    }
+    fn indices(&self) -> Indices {
+        self.indices.clone()
     }
 }

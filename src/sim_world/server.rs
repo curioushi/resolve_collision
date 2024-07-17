@@ -6,7 +6,7 @@ use sim_world::sim_world_server::{SimWorld, SimWorldServer};
 use sim_world::{EmptyRequest, NewSceneResponse};
 
 mod geometry;
-use geometry::{to_rerun_mesh3d, SceneTree};
+use geometry::{to_rerun_mesh3d, GeometryType, SceneTree};
 
 use std::sync::{Arc, Mutex};
 
@@ -24,14 +24,17 @@ impl MySimWorld {
         let scene_tree = Arc::new(Mutex::new(SceneTree::new()));
         let mut rng = rand::thread_rng();
         if let Ok(mut scene_tree) = scene_tree.lock() {
+            let container = geometry::Container::new(8.0f32, 3.0f32, 3.0f32);
+            scene_tree.set_geometry("/container", Box::new(container));
+            scene_tree.set_transform("/container", na::Isometry3::identity());
             for i in 0..10 {
                 let path = format!("/cartons/{}", i);
-                let hsize_x = rng.gen_range(0.1f32..1.0f32);
-                let hsize_y = rng.gen_range(0.1f32..1.0f32);
-                let hsize_z = rng.gen_range(0.1f32..1.0f32);
+                let size_x = rng.gen_range(0.2f32..0.8f32);
+                let size_y = rng.gen_range(0.2f32..0.8f32);
+                let size_z = rng.gen_range(0.2f32..0.8f32);
                 scene_tree.set_geometry(
                     path.as_str(),
-                    Box::new(geometry::Carton::new(hsize_x, hsize_y, hsize_z)),
+                    Box::new(geometry::Carton::new(size_x, size_y, size_z)),
                 );
                 let x = rng.gen_range(-5.0f32..5.0f32);
                 let y = rng.gen_range(-5.0f32..5.0f32);
@@ -81,6 +84,10 @@ impl SimWorld for MySimWorld {
                     if node.transform.is_some() && node.geometry.is_some() {
                         let tf = node.transform.as_ref().unwrap();
                         let geom = node.geometry.as_ref().unwrap();
+                        let color = match geom.type_id() {
+                            GeometryType::Carton => rerun::Color::from_rgb(211, 186, 156),
+                            GeometryType::Container => rerun::Color::from_rgb(84, 137, 191),
+                        };
                         let vertices = geom.vertices();
                         let vertices = vertices
                             .iter()
@@ -92,7 +99,7 @@ impl SimWorld for MySimWorld {
                         let _ = rec.log(
                             path.as_str(),
                             &to_rerun_mesh3d(&vertices, &geom.indices())
-                                .with_vertex_colors(Some(rerun::Color::from_rgb(0, 255, 0))),
+                                .with_vertex_colors(Some(color)),
                         );
                     }
                 }
