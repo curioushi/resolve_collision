@@ -1,9 +1,8 @@
-use rand::Rng;
 use tonic::{transport::Server, Request, Response, Status};
 
 use ncollide3d::na;
 use sim_world::sim_world_server::{SimWorld, SimWorldServer};
-use sim_world::{EmptyRequest, NewSceneResponse};
+use sim_world::{Empty, NewSceneRequest};
 
 mod geometry;
 use geometry::{bake_cuboids_by_free_fall, to_rerun_mesh3d, GeometryType, SceneTree};
@@ -22,63 +21,12 @@ pub struct MySimWorld {
 impl MySimWorld {
     fn new() -> Self {
         let scene_tree = Arc::new(Mutex::new(SceneTree::new()));
-        let mut rng = rand::thread_rng();
-        if let Ok(mut scene_tree) = scene_tree.lock() {
-            let ground = geometry::Ground::new(30.0f32);
-            scene_tree.set_geometry("/ground", Box::new(ground));
-            scene_tree.set_transform(
-                "/ground",
-                na::Isometry3::from_parts(
-                    na::Translation3::new(0.0f32, 0.0f32, -0.0001f32), // prevent z-fighting
-                    na::UnitQuaternion::identity(),
-                ),
-            );
-            let container = geometry::Container::new(8.0f32, 3.0f32, 3.0f32);
-            scene_tree.set_geometry("/container", Box::new(container));
-            scene_tree.set_transform("/container", na::Isometry3::identity());
-            let mut half_sizes = Vec::new();
-            let mut initial_poses = Vec::new();
-            let num = 100;
-            for i in 0..num {
-                let path = format!("/cartons/{}", i);
-                let size_x = rng.gen_range(0.2f32..0.8f32);
-                let size_y = rng.gen_range(0.2f32..0.8f32);
-                let size_z = rng.gen_range(0.2f32..0.8f32);
-                scene_tree.set_geometry(
-                    path.as_str(),
-                    Box::new(geometry::Carton::new(size_x, size_y, size_z)),
-                );
-                let x = rng.gen_range(-2.0f32..2.0f32);
-                let y = rng.gen_range(-2.0f32..2.0f32);
-                let z = rng.gen_range(5.0f32..10.0f32);
-                let euler_x = rng.gen_range(0.0f32..std::f32::consts::PI);
-                let euler_y = rng.gen_range(0.0f32..std::f32::consts::PI);
-                let euler_z = rng.gen_range(0.0f32..std::f32::consts::PI);
-                let pose = na::Isometry3::new(
-                    na::Vector3::new(x, y, z),
-                    na::Vector3::new(euler_x, euler_y, euler_z),
-                );
-                scene_tree.set_transform(path.as_str(), pose);
-                half_sizes.push((size_x * 0.5, size_y * 0.5, size_z * 0.5));
-                initial_poses.push(pose);
-            }
-            let final_poses = bake_cuboids_by_free_fall(&half_sizes, &initial_poses);
-            for i in 0..num {
-                let path = format!("/cartons/{}", i);
-                scene_tree.set_transform(path.as_str(), final_poses[i]);
-            }
-        }
-        if let Ok(recording) = rerun::RecordingStreamBuilder::new("sim_world").spawn() {
-            Self {
-                rec: Some(recording),
-                scene_tree,
-            }
+        let rec = if let Ok(recording) = rerun::RecordingStreamBuilder::new("sim_world").spawn() {
+            Some(recording)
         } else {
-            Self {
-                rec: None,
-                scene_tree,
-            }
-        }
+            None
+        };
+        Self { rec, scene_tree }
     }
 }
 
@@ -86,17 +34,21 @@ impl MySimWorld {
 impl SimWorld for MySimWorld {
     async fn new_scene(
         &self,
-        _request: Request<EmptyRequest>,
-    ) -> Result<Response<NewSceneResponse>, Status> {
-        let reply = NewSceneResponse {
-            status: Some(sim_world::Status {
-                error_code: 0,
-                message: "Success".into(),
-            }),
-        };
-
-        if let Some(rec) = self.rec.as_ref() {
-            if let Ok(scene_tree) = self.scene_tree.lock() {
+        request: Request<NewSceneRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.get_ref();
+        if let Ok(mut scene_tree) = self.scene_tree.lock() {
+            scene_tree.clear();
+            let container_config = &req.container_config;
+            let container = geometry::Container::new(
+                container_config.size.length,
+                container_config.size.width,
+                container_config.size.height,
+            );
+            scene_tree.set_geometry("/container", Box::new(container));
+            scene_tree.set_transform("/container", na::Isometry3::identity());
+            // publish to Rerun
+            if let Some(rec) = self.rec.as_ref() {
                 for (path, node) in scene_tree.iter() {
                     if node.transform.is_some() && node.geometry.is_some() {
                         let tf = node.transform.as_ref().unwrap();
@@ -123,6 +75,7 @@ impl SimWorld for MySimWorld {
                 }
             }
         }
+        let reply = Empty {};
         Ok(Response::new(reply))
     }
 }

@@ -172,6 +172,10 @@ impl SceneTree {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.root = SceneNode::new();
+    }
+
     pub fn set_geometry(&mut self, path: &str, geometry: Box<dyn Geometry>) {
         let mut node = &mut self.root;
         for name in path.split('/') {
