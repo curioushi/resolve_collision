@@ -1,7 +1,7 @@
 use sim_world::sim_world_client::SimWorldClient;
 use sim_world::{
     BinPackingAlgorithm, BinPackingMethod, BoxRandomization, GenContainerConfig, GenPackingConfig,
-    NewSceneRequest, PackingPhysics, Range, Size,
+    InitRobotRequest, InitSceneRequest, PackingPhysics, Range, Size,
 };
 
 pub mod sim_world {
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_steps: Some(400),
     });
 
-    let request = tonic::Request::new(NewSceneRequest {
+    let request = tonic::Request::new(InitSceneRequest {
         container_config: GenContainerConfig {
             size: Size {
                 length: 12.0,
@@ -93,8 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     });
 
-    let response = client.new_scene(request).await?;
+    let response = client.init_scene(request).await?;
+    println!("RESPONSE={:?}", response);
 
+    let request = tonic::Request::new(InitRobotRequest {});
+    let response = client.init_robot(request).await?;
     println!("RESPONSE={:?}", response);
 
     Ok(())

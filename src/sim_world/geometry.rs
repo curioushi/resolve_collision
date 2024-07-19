@@ -1,6 +1,7 @@
 use ncollide3d::na;
 use ncollide3d::shape::Cuboid;
 use std::collections::{HashMap, VecDeque};
+use stl_io;
 
 type Vertices = Vec<(f32, f32, f32)>;
 type Indices = Vec<(u32, u32, u32)>;
@@ -156,7 +157,21 @@ pub struct AABB {
 }
 
 impl AABB {
-    pub fn insert(&mut self, half_size: &(f32, f32, f32), pose: &na::Isometry3<f32>) {
+    pub fn new() -> Self {
+        Self {
+            min: (std::f32::MAX, std::f32::MAX, std::f32::MAX),
+            max: (std::f32::MIN, std::f32::MIN, std::f32::MIN),
+        }
+    }
+    pub fn insert_point(&mut self, x: f32, y: f32, z: f32) {
+        self.min.0 = self.min.0.min(x);
+        self.min.1 = self.min.1.min(y);
+        self.min.2 = self.min.2.min(z);
+        self.max.0 = self.max.0.max(x);
+        self.max.1 = self.max.1.max(y);
+        self.max.2 = self.max.2.max(z);
+    }
+    pub fn insert_cuboid(&mut self, half_size: &(f32, f32, f32), pose: &na::Isometry3<f32>) {
         let vertices = vec![
             (-half_size.0, -half_size.1, -half_size.2),
             (half_size.0, -half_size.1, -half_size.2),
@@ -170,12 +185,7 @@ impl AABB {
         for v in vertices.iter() {
             let v = pose.transform_point(&na::Point3::new(v.0, v.1, v.2));
             let (x, y, z) = (v.x, v.y, v.z);
-            self.min.0 = self.min.0.min(x);
-            self.min.1 = self.min.1.min(y);
-            self.min.2 = self.min.2.min(z);
-            self.max.0 = self.max.0.max(x);
-            self.max.1 = self.max.1.max(y);
-            self.max.2 = self.max.2.max(z);
+            self.insert_point(x, y, z);
         }
     }
 }
@@ -185,10 +195,7 @@ pub fn simple_stacking(
     bin_size: &(f32, f32, f32),
 ) -> Vec<na::Isometry3<f32>> {
     let mut cursor = (0.0f32, 0.0f32, 0.0f32);
-    let mut aabb = AABB {
-        min: (0.0, 0.0, 0.0),
-        max: (0.0, 0.0, 0.0),
-    };
+    let mut aabb = AABB::new();
     let mut poses = Vec::new();
     let mut index = 0;
     while index < size_list.len() {
@@ -203,7 +210,7 @@ pub fn simple_stacking(
             na::UnitQuaternion::identity(),
         );
         let mut try_aabb = aabb;
-        try_aabb.insert(&half_size, &pose);
+        try_aabb.insert_cuboid(&half_size, &pose);
         if try_aabb.max.1 > bin_size.1 {
             /* new row */
             cursor.1 = 0.0;
@@ -236,6 +243,7 @@ pub fn simple_stacking(
 pub struct SceneNode {
     pub geometry: Option<Box<dyn Geometry>>,
     pub transform: Option<na::Isometry3<f32>>,
+    pub color: Option<(u8, u8, u8)>,
     pub children: HashMap<String, SceneNode>,
 }
 
@@ -244,6 +252,7 @@ impl SceneNode {
         Self {
             geometry: None,
             transform: None,
+            color: None,
             children: HashMap::new(),
         }
     }
@@ -291,69 +300,94 @@ impl SceneTree {
         self.root = SceneNode::new();
     }
 
-    pub fn set_geometry(&mut self, path: &str, geometry: Box<dyn Geometry>) {
-        let mut node = &mut self.root;
+    fn get_node(&self, path: &str) -> Option<&SceneNode> {
+        let mut node = &self.root;
         for name in path.split('/') {
             if name.is_empty() {
                 continue;
             }
             if node.children.contains_key(name) {
-                node = node.children.get_mut(name).unwrap();
+                node = node.children.get(name).unwrap();
             } else {
-                let child = SceneNode::new();
-                node.children.insert(name.to_string(), child);
-                node = node.children.get_mut(name).unwrap();
+                return None;
             }
         }
-        node.geometry = Some(geometry);
-        if node.transform.is_none() {
-            node.transform = Some(na::Isometry3::identity());
+        Some(node)
+    }
+
+    fn get_mut_node(&mut self, path: &str, force_create: bool) -> Option<&mut SceneNode> {
+        let mut node = &mut self.root;
+        if force_create {
+            for name in path.split('/') {
+                if name.is_empty() {
+                    continue;
+                }
+                if node.children.contains_key(name) {
+                    node = node.children.get_mut(name).unwrap();
+                } else {
+                    let child = SceneNode::new();
+                    node.children.insert(name.to_string(), child);
+                    node = node.children.get_mut(name).unwrap();
+                }
+            }
+        } else {
+            for name in path.split('/') {
+                if name.is_empty() {
+                    continue;
+                }
+                if node.children.contains_key(name) {
+                    node = node.children.get_mut(name).unwrap();
+                } else {
+                    return None;
+                }
+            }
+        }
+        Some(node)
+    }
+
+    pub fn set_geometry(&mut self, path: &str, geometry: Box<dyn Geometry>) {
+        if let Some(node) = self.get_mut_node(path, true) {
+            node.geometry = Some(geometry);
+            if node.transform.is_none() {
+                node.transform = Some(na::Isometry3::identity());
+            }
         }
     }
 
     pub fn get_geometry(&self, path: &str) -> Option<&Box<dyn Geometry>> {
-        let mut node = &self.root;
-        for name in path.split('/') {
-            if name.is_empty() {
-                continue;
-            }
-            if node.children.contains_key(name) {
-                node = node.children.get(name).unwrap();
-            } else {
-                return None;
-            }
+        if let Some(node) = self.get_node(path) {
+            node.geometry.as_ref()
+        } else {
+            None
         }
-        node.geometry.as_ref()
     }
 
     pub fn set_transform(&mut self, path: &str, transform: na::Isometry3<f32>) {
-        let mut node = &mut self.root;
-        for name in path.split('/') {
-            if name.is_empty() {
-                continue;
-            }
-            if node.children.contains_key(name) {
-                node = node.children.get_mut(name).unwrap();
-            } else {
-                return;
-            }
+        if let Some(node) = self.get_mut_node(path, false) {
+            node.transform = Some(transform);
         }
-        node.transform = Some(transform);
     }
 
     pub fn get_transform(&self, path: &str) -> Option<&na::Isometry3<f32>> {
-        let mut node = &self.root;
-        for name in path.split('/') {
-            if name.is_empty() {
-                continue;
-            }
-            if node.children.contains_key(name) {
-                node = node.children.get(name).unwrap();
-            } else {
-                return None;
-            }
+        if let Some(node) = self.get_node(path) {
+            node.transform.as_ref()
+        } else {
+            None
         }
-        node.transform.as_ref()
+    }
+
+    pub fn set_color(&mut self, path: &str, color: Option<(u8, u8, u8)>) {
+        if let Some(node) = self.get_mut_node(path, false) {
+            node.color = color;
+        }
+    }
+
+    pub fn get_color(&mut self, path: &str) -> Option<(u8, u8, u8)> {
+        if let Some(node) = self.get_node(path) {
+            node.color
+        } else {
+            None
+        }
     }
 
     pub fn iter(&self) -> SceneTreeIterator {
@@ -361,14 +395,7 @@ impl SceneTree {
     }
 }
 
-pub enum GeometryType {
-    Ground,
-    Carton,
-    Container,
-}
-
 pub trait Geometry: Send + Sync {
-    fn type_id(&self) -> GeometryType;
     fn size(&self) -> (f32, f32, f32);
     fn vertices(&self) -> Vertices;
     fn indices(&self) -> Indices;
@@ -398,9 +425,6 @@ impl Geometry for Carton {
             half_extents.y * 2.0,
             half_extents.z * 2.0,
         )
-    }
-    fn type_id(&self) -> GeometryType {
-        GeometryType::Carton
     }
     fn vertices(&self) -> Vertices {
         let half_extents = self.cuboid.half_extents;
@@ -477,9 +501,6 @@ impl Geometry for Container {
     fn size(&self) -> (f32, f32, f32) {
         self.size
     }
-    fn type_id(&self) -> GeometryType {
-        GeometryType::Container
-    }
     fn vertices(&self) -> Vertices {
         self.vertices.clone()
     }
@@ -502,9 +523,6 @@ impl Geometry for Ground {
     fn size(&self) -> (f32, f32, f32) {
         (self.size, self.size, 0.0)
     }
-    fn type_id(&self) -> GeometryType {
-        GeometryType::Ground
-    }
     fn vertices(&self) -> Vertices {
         vec![
             (-self.size, -self.size, 0.0),
@@ -515,5 +533,61 @@ impl Geometry for Ground {
     }
     fn indices(&self) -> Indices {
         vec![(0, 1, 2), (0, 2, 3)]
+    }
+}
+
+pub struct TriMesh {
+    size: (f32, f32, f32),
+    vertices: Vertices,
+    indices: Indices,
+}
+
+impl TriMesh {
+    pub fn from_stl(filepath: &str) -> Self {
+        let file = std::fs::File::open(filepath).unwrap();
+        let mut reader = std::io::BufReader::new(file);
+        let stl = stl_io::read_stl(&mut reader).expect("Failed to read STL file");
+        let vertices = stl
+            .vertices
+            .iter()
+            .map(|v| (v[0], v[1], v[2]))
+            .collect::<Vec<_>>();
+        let indices = stl
+            .faces
+            .iter()
+            .map(|f| {
+                (
+                    f.vertices[0] as u32,
+                    f.vertices[1] as u32,
+                    f.vertices[2] as u32,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut aabb = AABB::new();
+        for v in vertices.iter() {
+            let (x, y, z) = v.clone();
+            aabb.insert_point(x, y, z);
+        }
+        Self {
+            size: (
+                aabb.max.0 - aabb.min.0,
+                aabb.max.1 - aabb.min.1,
+                aabb.max.2 - aabb.min.2,
+            ),
+            vertices,
+            indices,
+        }
+    }
+}
+
+impl Geometry for TriMesh {
+    fn size(&self) -> (f32, f32, f32) {
+        return self.size;
+    }
+    fn vertices(&self) -> Vertices {
+        return self.vertices.clone();
+    }
+    fn indices(&self) -> Indices {
+        return self.indices.clone();
     }
 }

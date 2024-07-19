@@ -4,12 +4,10 @@ use tonic::{transport::Server, Request, Response, Status};
 
 use ncollide3d::na;
 use sim_world::sim_world_server::{SimWorld, SimWorldServer};
-use sim_world::{BinPackingMethod, Empty, NewSceneRequest};
+use sim_world::{BinPackingMethod, Empty, InitRobotRequest, InitSceneRequest};
 
 mod geometry;
-use geometry::{
-    bake_cuboids_by_free_fall, simple_stacking, to_rerun_mesh3d, GeometryType, SceneTree, AABB,
-};
+use geometry::{bake_cuboids_by_free_fall, simple_stacking, to_rerun_mesh3d, SceneTree, AABB};
 use log::{error, info, warn};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -52,14 +50,26 @@ fn fixed_range(range: Range<f32>) -> Range<f32> {
 
 #[tonic::async_trait]
 impl SimWorld for MySimWorld {
-    async fn new_scene(
+    async fn init_scene(
         &self,
-        request: Request<NewSceneRequest>,
+        request: Request<InitSceneRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
         if let Ok(mut scene_tree) = self.scene_tree.lock() {
             /* clear Scene Tree */
             scene_tree.clear();
+
+            /* create ground */
+            let ground = geometry::Ground::new(20.0);
+            scene_tree.set_geometry("/ground", Box::new(ground));
+            scene_tree.set_transform(
+                "/ground",
+                na::Isometry3::from_parts(
+                    na::Translation3::new(0.0, 0.0, -1e-4), // prevent z-fitting
+                    na::UnitQuaternion::identity(),
+                ),
+            );
+            scene_tree.set_color("/ground", Some((200, 200, 200)));
 
             /* create container */
             let container_config = &req.container_config;
@@ -83,6 +93,7 @@ impl SimWorld for MySimWorld {
             let container =
                 geometry::Container::new(container_size.0, container_size.1, container_size.2);
             scene_tree.set_geometry("/container", Box::new(container));
+            scene_tree.set_color("/container", Some((84, 137, 191)));
 
             /* create carton packing */
             if let Some(packing_config) = &req.packing_config {
@@ -218,12 +229,9 @@ impl SimWorld for MySimWorld {
                 /* physics */
                 if let Some(physics) = &packing_config.physics {
                     /* align to container */
-                    let mut aabb = AABB {
-                        min: (0.0, 0.0, 0.0),
-                        max: (0.0, 0.0, 0.0),
-                    };
+                    let mut aabb = AABB::new();
                     for (size, pose) in size_list.iter().zip(pose_list.iter()) {
-                        aabb.insert(&(size.0 * 0.5, size.1 * 0.5, size.2 * 0.5), &pose);
+                        aabb.insert_cuboid(&(size.0 * 0.5, size.1 * 0.5, size.2 * 0.5), &pose);
                     }
                     let translation = na::Translation3::new(
                         container_size.0 - aabb.max.0,
@@ -296,6 +304,7 @@ impl SimWorld for MySimWorld {
                     let carton = geometry::Carton::new(size.0, size.1, size.2);
                     scene_tree.set_geometry(&format!("/carton/{}", i), Box::new(carton));
                     scene_tree.set_transform(&format!("/carton/{}", i), pose.clone());
+                    scene_tree.set_color(&format!("/carton/{}", i), Some((211, 186, 156)));
                 }
             } else {
                 info!("No packing config is provided. Empty container.");
@@ -313,11 +322,7 @@ impl SimWorld for MySimWorld {
                     if node.transform.is_some() && node.geometry.is_some() {
                         let tf = node.transform.as_ref().unwrap();
                         let geom = node.geometry.as_ref().unwrap();
-                        let color = match geom.type_id() {
-                            GeometryType::Ground => rerun::Color::from_rgb(200, 200, 200),
-                            GeometryType::Carton => rerun::Color::from_rgb(211, 186, 156),
-                            GeometryType::Container => rerun::Color::from_rgb(84, 137, 191),
-                        };
+                        let color = node.color;
                         let vertices = geom.vertices();
                         let vertices = vertices
                             .iter()
@@ -328,8 +333,51 @@ impl SimWorld for MySimWorld {
                             .collect::<Vec<_>>();
                         let _ = rec.log(
                             path.as_str(),
-                            &to_rerun_mesh3d(&vertices, &geom.indices())
-                                .with_vertex_colors(Some(color)),
+                            &to_rerun_mesh3d(&vertices, &geom.indices()).with_vertex_colors(color),
+                        );
+                    }
+                }
+            }
+        }
+        let reply = Empty {};
+        Ok(Response::new(reply))
+    }
+
+    async fn init_robot(
+        &self,
+        request: Request<InitRobotRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        /* Test code */
+        if let Ok(mut scene_tree) = self.scene_tree.lock() {
+            for i in 0..7 {
+                let link = geometry::TriMesh::from_stl(
+                    format!(
+                        "/home/shq/Projects/mycode/resolve_collision/data/fanuc/mesh/link{}.stl",
+                        i
+                    )
+                    .as_str(),
+                );
+                scene_tree.set_geometry(format!("/robot/link{}", i).as_str(), Box::new(link));
+                scene_tree.set_color(format!("/robot/link{}", i).as_str(), Some((247, 202, 1)));
+            }
+            // publish to Rerun
+            if let Some(rec) = self.rec.as_ref() {
+                for (path, node) in scene_tree.iter() {
+                    if node.transform.is_some() && node.geometry.is_some() {
+                        let tf = node.transform.as_ref().unwrap();
+                        let geom = node.geometry.as_ref().unwrap();
+                        let color = node.color;
+                        let vertices = geom.vertices();
+                        let vertices = vertices
+                            .iter()
+                            .map(|v| {
+                                let p = tf * na::Point3::new(v.0, v.1, v.2);
+                                (p.x, p.y, p.z)
+                            })
+                            .collect::<Vec<_>>();
+                        let _ = rec.log(
+                            path.as_str(),
+                            &to_rerun_mesh3d(&vertices, &geom.indices()).with_vertex_colors(color),
                         );
                     }
                 }

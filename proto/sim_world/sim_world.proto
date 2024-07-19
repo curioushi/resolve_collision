@@ -1,7 +1,10 @@
 syntax = "proto2";
 package sim_world;
 
-service SimWorld { rpc NewScene(NewSceneRequest) returns (Empty); }
+service SimWorld {
+  rpc InitScene(InitSceneRequest) returns (Empty);
+  rpc InitRobot(InitRobotRequest) returns (Empty);
+}
 
 message Empty {}
 
@@ -92,7 +95,9 @@ message GenPackingConfig {
   optional PackingPhysics physics = 5;
 }
 
-message NewSceneRequest {
+message InitSceneRequest {
   required GenContainerConfig container_config = 1;
   optional GenPackingConfig packing_config = 2;
 }
+
+message InitRobotRequest {}
