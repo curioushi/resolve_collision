@@ -35,19 +35,46 @@ pub fn to_rerun_mesh3d(vertices: &Vertices, indices: &Indices) -> rerun::Mesh3D 
 pub fn bake_cuboids_by_free_fall(
     half_sizes: &Vec<(f32, f32, f32)>,
     initial_poses: &Vec<na::Isometry3<f32>>,
+    container_size: &(f32, f32, f32),
+    drop_height: Option<f32>,
+    num_steps: Option<u32>,
 ) -> Vec<na::Isometry3<f32>> {
     assert_eq!(half_sizes.len(), initial_poses.len());
     use rapier3d::prelude::*;
+    let drop_height = drop_height.unwrap_or(1.0f32);
+    let num_steps = num_steps.unwrap_or(400u32);
     let mut rigid_body_set = RigidBodySet::new();
     let mut collider_set = ColliderSet::new();
 
     /* Create the ground. */
-    let collider = ColliderBuilder::cuboid(1000.0, 1000.0, 1.0).build();
-    let rigid_body = RigidBodyBuilder::fixed()
-        .translation(vector![0.0, 0.0, -1.0])
+    let ground_cl = ColliderBuilder::cuboid(1000.0, 1000.0, 1.0).build();
+    let ground_rb = RigidBodyBuilder::fixed()
+        .translation(vector![1000.0, 0.0, -1.0])
         .build();
-    let body_handle = rigid_body_set.insert(rigid_body);
-    collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+    let body_handle = rigid_body_set.insert(ground_rb);
+    collider_set.insert_with_parent(ground_cl, body_handle, &mut rigid_body_set);
+
+    /* Create walls */
+    let left_wall_cl = ColliderBuilder::cuboid(1000.0, 1.0, 1000.0).build();
+    let left_wall_rb = RigidBodyBuilder::fixed()
+        .translation(vector![0.0, 1.0 + container_size.1 * 0.5, 0.0])
+        .build();
+    let right_wall_cl = ColliderBuilder::cuboid(1000.0, 1.0, 1000.0).build();
+    let right_wall_rb = RigidBodyBuilder::fixed()
+        .translation(vector![0.0, -1.0 - container_size.1 * 0.5, 0.0])
+        .build();
+    let front_wall_cl = ColliderBuilder::cuboid(1.0, 1000.0, 1000.0).build();
+    let front_wall_rb = RigidBodyBuilder::fixed()
+        .translation(vector![1.0 + container_size.0, 0.0, 0.0])
+        .build();
+    for (cl, rb) in vec![
+        (left_wall_cl, left_wall_rb),
+        (right_wall_cl, right_wall_rb),
+        (front_wall_cl, front_wall_rb),
+    ] {
+        let body_handle = rigid_body_set.insert(rb);
+        collider_set.insert_with_parent(cl, body_handle, &mut rigid_body_set);
+    }
 
     /* Create the cuboids  */
     let mut body_handles = Vec::new();
@@ -57,7 +84,11 @@ pub fn bake_cuboids_by_free_fall(
         let translation = initial_pose.translation;
         let rotaiton = initial_pose.rotation.euler_angles();
         let rigid_body = RigidBodyBuilder::dynamic()
-            .translation(vector![translation.x, translation.y, translation.z])
+            .translation(vector![
+                translation.x,
+                translation.y,
+                translation.z + drop_height
+            ])
             .rotation(vector![rotaiton.0, rotaiton.1, rotaiton.2])
             .build();
         let collider = ColliderBuilder::cuboid(half_size.0, half_size.1, half_size.2)
@@ -83,7 +114,7 @@ pub fn bake_cuboids_by_free_fall(
     let event_handler = ();
 
     /* Bake the simulation. */
-    for _ in 0..400 {
+    for _ in 0..num_steps {
         physics_pipeline.step(
             &gravity,
             &integration_parameters,
@@ -116,6 +147,90 @@ pub fn bake_cuboids_by_free_fall(
         })
         .collect::<Vec<_>>();
     final_poses
+}
+
+#[derive(Clone, Copy)]
+pub struct AABB {
+    pub min: (f32, f32, f32),
+    pub max: (f32, f32, f32),
+}
+
+impl AABB {
+    pub fn insert(&mut self, half_size: &(f32, f32, f32), pose: &na::Isometry3<f32>) {
+        let vertices = vec![
+            (-half_size.0, -half_size.1, -half_size.2),
+            (half_size.0, -half_size.1, -half_size.2),
+            (half_size.0, half_size.1, -half_size.2),
+            (-half_size.0, half_size.1, -half_size.2),
+            (-half_size.0, -half_size.1, half_size.2),
+            (half_size.0, -half_size.1, half_size.2),
+            (half_size.0, half_size.1, half_size.2),
+            (-half_size.0, half_size.1, half_size.2),
+        ];
+        for v in vertices.iter() {
+            let v = pose.transform_point(&na::Point3::new(v.0, v.1, v.2));
+            let (x, y, z) = (v.x, v.y, v.z);
+            self.min.0 = self.min.0.min(x);
+            self.min.1 = self.min.1.min(y);
+            self.min.2 = self.min.2.min(z);
+            self.max.0 = self.max.0.max(x);
+            self.max.1 = self.max.1.max(y);
+            self.max.2 = self.max.2.max(z);
+        }
+    }
+}
+
+pub fn simple_stacking(
+    size_list: &Vec<(f32, f32, f32)>,
+    bin_size: &(f32, f32, f32),
+) -> Vec<na::Isometry3<f32>> {
+    let mut cursor = (0.0f32, 0.0f32, 0.0f32);
+    let mut aabb = AABB {
+        min: (0.0, 0.0, 0.0),
+        max: (0.0, 0.0, 0.0),
+    };
+    let mut poses = Vec::new();
+    let mut index = 0;
+    while index < size_list.len() {
+        let size = size_list[index];
+        let half_size = (size.0 * 0.5, size.1 * 0.5, size.2 * 0.5);
+        let pose = na::Isometry3::from_parts(
+            na::Translation3::new(
+                cursor.0 + half_size.0,
+                cursor.1 + half_size.1,
+                cursor.2 + half_size.2,
+            ),
+            na::UnitQuaternion::identity(),
+        );
+        let mut try_aabb = aabb;
+        try_aabb.insert(&half_size, &pose);
+        if try_aabb.max.1 > bin_size.1 {
+            /* new row */
+            cursor.1 = 0.0;
+            cursor.2 = aabb.max.2;
+            continue;
+        }
+        if try_aabb.max.2 > bin_size.2 {
+            /* new layer */
+            cursor.0 = aabb.max.0;
+            cursor.1 = 0.0;
+            cursor.2 = 0.0;
+            aabb = AABB {
+                min: (cursor.0, 0.0, 0.0),
+                max: (cursor.0, 0.0, 0.0),
+            };
+            continue;
+        }
+        if try_aabb.max.0 > bin_size.0 {
+            /* full */
+            break;
+        }
+        aabb = try_aabb;
+        cursor.1 += size.1;
+        index += 1;
+        poses.push(pose);
+    }
+    poses
 }
 
 pub struct SceneNode {
@@ -191,6 +306,9 @@ impl SceneTree {
             }
         }
         node.geometry = Some(geometry);
+        if node.transform.is_none() {
+            node.transform = Some(na::Isometry3::identity());
+        }
     }
 
     pub fn get_geometry(&self, path: &str) -> Option<&Box<dyn Geometry>> {

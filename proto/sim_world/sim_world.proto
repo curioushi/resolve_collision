@@ -47,9 +47,13 @@ message GenContainerConfig {
   optional float wave_height = 5;
 }
 
+enum BinPackingMethod {
+  SimpleStacking = 0;
+}
+
 message BinPackingAlgorithm {
-  required string method = 2;
-  required Size bin_size = 3;
+  required BinPackingMethod method = 2;
+  optional Size bin_size = 3;
 }
 
 message BoxRandomization {
@@ -67,7 +71,7 @@ message BoxRandomization {
 
 message PackingPhysics {
   optional float drop_height = 2;
-  optional int32 num_steps = 3;
+  optional uint32 num_steps = 3;
 }
 
 message GenPackingConfig {
@@ -76,7 +80,7 @@ message GenPackingConfig {
 
   // If not provided, the poses of the items will be determined by
   // internal bin-packing algorithm
-  optional Pose pose_list = 2;
+  repeated Pose pose_list = 2;
 
   // bin-packing algorithm configuration
   optional BinPackingAlgorithm bin_packing_algorithm = 3;
